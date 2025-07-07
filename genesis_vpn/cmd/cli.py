@@ -46,8 +46,10 @@ config.register_service_config_opts()
 
 def add_parsers(subparsers):
     create_action = subparsers.add_parser("create")
-    create_action.add_argument("user_id")
-    create_action.add_argument("cert_name", nargs="?", default=None)
+    create_action.add_argument("user_id", type=str.lower)
+    create_action.add_argument(
+        "cert_name", type=str.lower, nargs="?", default=None
+    )
 
     list_action = subparsers.add_parser("list")
     list_action.add_argument("--user-id", required=False)
