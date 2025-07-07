@@ -1,5 +1,8 @@
 client
 
+# You may remove this line if your client truly supports split-DNS
+pull-filter ignore "dhcp-option DOMAIN-SEARCH"
+
 dev tun
 remote {{server_address}} {{server_port}} {{server_protocol}}
 nobind

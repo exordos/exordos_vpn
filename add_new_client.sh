@@ -54,7 +54,7 @@ read -r -d '' TEMPLATE <<EOF
 client
 
 dev tun
-remote ${1} 1194 udp
+remote ${1} 1194 tcp
 nobind
 
 persist-key
