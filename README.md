@@ -1,5 +1,27 @@
 # Genesis element: VPN
 
+## Operator CLI
+
+```bash
+# List user's certs
+$ genesis-vpn-cli list --user-id myuser
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━┳━━━━━━━━┓
+┃ uuid                                 ┃ user_id  ┃ name ┃ status ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━╇━━━━━━━━┩
+│ 7759546f-007a-4efc-a37f-08aaf427a05f │ myuser   │ main │ ACTIVE │
+└──────────────────────────────────────┴──────────┴──────┴────────┘
+
+# Create new config
+$ genesis-vpn-cli create USER_NAME CERT_NAME
+
+# Regen config
+$ genesis-vpn-cli generate_config 7759546f-007a-4efc-a37f-08aaf427a05f
+Configuration file generated at /etc/openvpn/easy-rsa/configs/myuser.main.ovpn
+
+# Block cert (user won't be connected with this cert in this case)
+$ genesis-vpn-cli disable 7759546f-007a-4efc-a37f-08aaf427a05f
+```
+
 ### Server config recommendations
 - use openvpn-DCO kernel module
 - DCO doesn't support mssfix, so we need to be sure to set the MTU explicitly (see issues [#61](https://github.com/OpenVPN/ovpn-dco/issues/61) and [#31](https://github.com/OpenVPN/ovpn-dco/issues/31)):
