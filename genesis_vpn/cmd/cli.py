@@ -30,11 +30,11 @@ from restalchemy.dm import filters as dm_filters
 from restalchemy.storage.sql import engines
 from restalchemy.common import contexts
 
-from genesis_vpn.common import cert
 from genesis_vpn.common import config
 from genesis_vpn.common import constants as c
 from genesis_vpn.common import log as infra_log
 from genesis_vpn.common import ovpn_config
+from genesis_vpn.common import privatebin
 from genesis_vpn.dm import models
 
 
@@ -50,12 +50,14 @@ def add_parsers(subparsers):
     create_action.add_argument(
         "cert_name", type=str.lower, nargs="?", default=None
     )
+    create_action.add_argument("--disable-pbin", action="store_true")
 
     list_action = subparsers.add_parser("list")
     list_action.add_argument("--user-id", required=False)
 
     gen_config_action = subparsers.add_parser("generate_config")
     gen_config_action.add_argument("uuid")
+    gen_config_action.add_argument("--disable-pbin", action="store_true")
 
     disable_action = subparsers.add_parser("disable")
     disable_action.add_argument("uuid")
@@ -99,6 +101,25 @@ def cert_create(session, conf):
     cert_generate_config(session, conf)
 
 
+def pbin_send(conf, config_file):
+    try:
+        if not conf.disable_pbin and CONF[c.COMMON_DOMAIN].get(
+            "privatebin_endpoint"
+        ):
+            dl_link = privatebin.send_file(
+                CONF[c.COMMON_DOMAIN].privatebin_endpoint,
+                text="Download your config file (see attachment)",
+                file=config_file,
+            )
+            CONSOLE.print(
+                f"One-time download link, lasts 1 week: {dl_link['full_url']}"
+            )
+    except Exception as e:
+        print(
+            f"Upload to pbin failed, feel free to retry with `generate_config`, error: {e}"
+        )
+
+
 def cert_generate_config(session, conf):
     filters = {}
     filters["uuid"] = dm_filters.EQ(conf.uuid)
@@ -115,6 +136,7 @@ def cert_generate_config(session, conf):
         f.write(ovpn_config.generate_ovpn_config(cert))
 
     CONSOLE.print(f"Configuration file generated at {config_file}")
+    pbin_send(conf, config_file)
 
 
 def cert_disable(session, conf):
