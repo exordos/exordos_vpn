@@ -57,7 +57,7 @@ class Certificate(CommonModel):
     #  variable-length integers as numeric (i.e. decimal for psycopg2).
     serial = properties.property(types.Decimal())
     address_offset = properties.property(
-        types.Integer(min_value=2, max_value=4096)
+        types.AllowNone(types.Integer(min_value=2, max_value=4096))
     )
 
     @classmethod

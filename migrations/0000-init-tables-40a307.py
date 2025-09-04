@@ -78,7 +78,7 @@ class MigrationStep(migrations.AbstarctMigrationStep):
                 "req" VARCHAR(4096),
                 "cert" VARCHAR(4096),
                 "serial" numeric UNIQUE,
-                "address_offset" int NOT NULL UNIQUE,
+                "address_offset" int UNIQUE,
                 "created_at" TIMESTAMP(6) NOT NULL DEFAULT NOW(),
                 "updated_at" TIMESTAMP(6) NOT NULL DEFAULT NOW()
             );

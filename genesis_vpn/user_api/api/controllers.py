@@ -100,9 +100,9 @@ class AddressesPerUserController(
 
     def filter(self, filters, order_by=None):
         self._enforce("read")
-        filt = {}
+        filt = {"status": dm_filters.EQ("ACTIVE")}
         if "user_id" in filters:
-            filt = {"user_id": dm_filters.EQ(filters["user_id"])}
+            filt["user_id"] = dm_filters.EQ(filters["user_id"])
         certs = models.Certificate.objects.get_all(filters=filt)
         res = collections.defaultdict(list)
         subnets = []

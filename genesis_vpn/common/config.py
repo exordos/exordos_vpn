@@ -109,6 +109,11 @@ service_config_opts = [
         help="List of subnets that the openvpn servers will use. "
         "Used for API info only.",
     ),
+    cfg.StrOpt(
+        "privatebin-endpoint",
+        default="",
+        help="Privatebin endpoint to paste config to. Can be disabled with --disable-pbin.",
+    ),
 ]
 
 

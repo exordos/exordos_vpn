@@ -68,11 +68,13 @@ class AgentService(basic.BasicService):
             LOG.info(f"({name})Processing certificate: {cert.common_name}")
             ccd_file_path = os.path.join(ccd_dir, cert.common_name)
             with open(ccd_file_path, "w") as f:
+                # If the certificate is disabled, disable the client in the CCD file.
+                if cert.status == "DISABLED":
+                    f.write("disable\n")
+                    # Disabled cert don't need any other settings
+                    continue
+
                 # permanent IP address assignment based on the certificate's address offset.
                 f.write(
                     f"ifconfig-push {cidr.network + cert.address_offset} {cidr.netmask}\n"
                 )
-
-                # If the certificate is disabled, disable the client in the CCD file.
-                if cert.status == "DISABLED":
-                    f.write("disable\n")
