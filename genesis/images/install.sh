@@ -91,8 +91,9 @@ make-cadir /etc/openvpn/easy-rsa
 
 # Init server
 cd /etc/openvpn/easy-rsa
+export EASYRSA_CERT_EXPIRE=3650
 ./easyrsa init-pki
-./easyrsa build-ca nopass
+./easyrsa --days=3650 build-ca nopass
 ./easyrsa gen-req $SERVER_NAME nopass
 ./easyrsa gen-dh
 

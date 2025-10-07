@@ -23,13 +23,13 @@ $ genesis-vpn-cli disable 7759546f-007a-4efc-a37f-08aaf427a05f
 ```
 
 ### Server config recommendations
-- use openvpn-DCO kernel module
+- use openvpn-DCO kernel module if you're ready to be a beta-tester of kernel-6.16+ and openvpn2.7 server (old DKMS-based DCO has some [stability problems](https://github.com/OpenVPN/ovpn-dco/issues/56))
 - DCO doesn't support mssfix, so we need to be sure to set the MTU explicitly (see issues [#61](https://github.com/OpenVPN/ovpn-dco/issues/61) and [#31](https://github.com/OpenVPN/ovpn-dco/issues/31)):
   ```
   tun-mtu 1380
   ```
   - note that **1380** bytes is a sweet spot, any larger may have problems with mobile hotspots or average internet providers easily
-- use **UDP** *only* if you can easily control clients and debug their problems. UDP has some drawbacks: it can't check connectivity easily, and you might see disruptions (instead of explicit disconnections) on timeouts or when multiple machines connect with the same certificate. Otherwise, **TCP** is *recommended* to use by default.
+- **TCP** is *recommended* to use by default. Use **UDP** *only* if you can easily control clients and debug their problems. UDP has some drawbacks: it can't check connectivity easily, and you might see disruptions (instead of explicit disconnections) on timeouts or when multiple machines connect with the same certificate.
 
 ### Client specifics and recommendations
 

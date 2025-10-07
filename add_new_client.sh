@@ -36,6 +36,7 @@ fi
 cd /etc/openvpn/easy-rsa || exit
 
 export EASYRSA_BATCH=1
+export EASYRSA_CERT_EXPIRE=3650
 ./easyrsa gen-req "$2" nopass
 yes | ./easyrsa sign-req client "$2"
 
