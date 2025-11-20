@@ -14,8 +14,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from functools import cache
 import logging
 
+import netaddr
 from oslo_config import cfg
 
 from genesis_vpn.common import constants
@@ -119,3 +121,16 @@ service_config_opts = [
 
 def register_service_config_opts():
     cfg.CONF.register_cli_opts(service_config_opts, constants.COMMON_DOMAIN)
+
+
+@cache
+def get_minimal_subnet_size():
+    return max(
+        min(
+            [
+                netaddr.IPNetwork(s).size - 2
+                for s in cfg.CONF[constants.COMMON_DOMAIN].server_subnets
+            ]
+        ),
+        0,
+    )
