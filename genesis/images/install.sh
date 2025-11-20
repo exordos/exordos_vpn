@@ -65,17 +65,20 @@ deactivate
 # Create links to venv
 ln -sf "$VENV_PATH/bin/genesis-vpn-user-api" "/usr/bin/genesis-vpn-user-api"
 ln -sf "$VENV_PATH/bin/genesis-vpn-server-agent" "/usr/bin/genesis-vpn-server-agent"
+ln -sf "$VENV_PATH/bin/genesis-vpn-scheduler" "/usr/bin/genesis-vpn-scheduler"
 ln -sf "$VENV_PATH/bin/genesis-vpn-import-certs" "/usr/bin/genesis-vpn-import-certs"
 ln -sf "$VENV_PATH/bin/genesis-vpn-cli" "/usr/bin/genesis-vpn-cli"
 
 # Install Systemd service files
 cp "$GC_PATH/etc/systemd/genesis-vpn-user-api.service" $SYSTEMD_SERVICE_DIR
 cp "$GC_PATH/etc/systemd/genesis-vpn-server-agent.service" $SYSTEMD_SERVICE_DIR
+cp "$GC_PATH/etc/systemd/genesis-vpn-scheduler.service" $SYSTEMD_SERVICE_DIR
 
 # Enable genesis notification services
 systemctl enable \
     genesis-vpn-user-api \
-    genesis-vpn-server-agent
+    genesis-vpn-server-agent \
+    genesis-vpn-scheduler
 
 # TODO: move next part into `bootstrap`
 

@@ -1,0 +1,13 @@
+[Unit]
+Description=Genesis VPN Scheduler
+After=network-online.target
+
+[Service]
+TimeoutStopSec=40
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGINT
+ExecStart=genesis-vpn-scheduler --config-file /etc/genesis_vpn/genesis_vpn.conf
+
+[Install]
+WantedBy=multi-user.target

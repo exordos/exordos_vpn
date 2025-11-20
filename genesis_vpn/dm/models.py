@@ -26,6 +26,7 @@ from restalchemy.dm import types
 from restalchemy.dm import types_dynamic
 from restalchemy.storage.sql import orm
 
+from genesis_vpn.common import config
 from genesis_vpn.common import constants as c
 from genesis_vpn.common import cert
 
@@ -98,16 +99,23 @@ class Certificate(CommonModel):
         return csrkey, clientkey, clientcert
 
     @classmethod
-    def allocate_address_offset(self, session=None):
-        # TODO: reuse freed offsets
+    def allocate_address_offset(cls, session=None):
         session = session or contexts.Context().get_session()
-        return (
-            int(
-                session.execute(
-                    "SELECT coalesce(max(address_offset), 1) as max_offset from certificates"
-                ).fetchall()[0]["max_offset"]
-            )
-            + 1
+
+        # 1 is reserved for server!
+        res = session.execute(
+            """\
+SELECT s.i AS unused_number
+FROM generate_series(2, %s) s(i)
+LEFT OUTER JOIN certificates c ON c.address_offset = s.i
+WHERE c.address_offset IS null
+limit 1;""",
+            (config.get_minimal_subnet_size(),),
+        ).fetchall()
+        if len(res) > 0:
+            return int(res[0]["unused_number"])
+        raise NotImplementedError(
+            "No unused address offsets found. Please increase the range of subnet or free disabled offsets!"
         )
 
     def __init__(
