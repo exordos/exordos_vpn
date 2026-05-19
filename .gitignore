@@ -128,3 +128,5 @@ docs/source/*.png
 
 # Vagrant
 .vagrant/
+
+*.conf.local

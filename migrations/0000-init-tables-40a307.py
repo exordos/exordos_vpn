@@ -19,7 +19,6 @@ from restalchemy.storage.sql import migrations
 
 
 class MigrationStep(migrations.AbstarctMigrationStep):
-
     def __init__(self):
         self._depends = []
 
@@ -108,18 +107,10 @@ class MigrationStep(migrations.AbstarctMigrationStep):
         for table in tables:
             self._delete_table_if_exists(session, table)
 
-        session.execute(
-            'DROP TYPE IF EXISTS "otp_devices_otp_type" CASCADE;'
-        )
-        session.execute(
-            'DROP TYPE IF EXISTS "otp_devices_status" CASCADE;'
-        )
-        session.execute(
-            'DROP TYPE IF EXISTS "accounts_auth_type" CASCADE;'
-        )
-        session.execute(
-            'DROP TYPE IF EXISTS "accounts_status" CASCADE;'
-        )
+        session.execute('DROP TYPE IF EXISTS "otp_devices_otp_type" CASCADE;')
+        session.execute('DROP TYPE IF EXISTS "otp_devices_status" CASCADE;')
+        session.execute('DROP TYPE IF EXISTS "accounts_auth_type" CASCADE;')
+        session.execute('DROP TYPE IF EXISTS "accounts_status" CASCADE;')
         session.execute("DROP SEQUENCE IF EXISTS serial_number;")
 
 

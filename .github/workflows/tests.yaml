@@ -33,10 +33,10 @@ jobs:
         image: postgres:latest
         # Provide the password for postgres
         env:
-          POSTGRES_DB: genesis_vpn
+          POSTGRES_DB: exordos_vpn
           POSTGRES_HOST_AUTH_METHOD: trust
-          POSTGRES_USER: genesis_vpn
-          POSTGRES_PASSWORD: genesis_vpn
+          POSTGRES_USER: exordos_vpn
+          POSTGRES_PASSWORD: exordos_vpn
         # Set health checks to wait until postgres has started
         options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
         ports:
@@ -55,7 +55,7 @@ jobs:
           tox -e ${{ matrix.python-version }}
       - name: Functional tests
         env:
-          DATABASE_URI: "postgresql://genesis_vpn:genesis_vpn@localhost:5432/genesis_vpn"
+          DATABASE_URI: "postgresql://exordos_vpn:exordos_vpn@localhost:5432/exordos_vpn"
         run: |
           tox -e ${{ matrix.python-version }}-functional
   Coverage:

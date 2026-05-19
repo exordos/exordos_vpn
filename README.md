@@ -4,7 +4,7 @@
 
 ```bash
 # List user's certs
-$ genesis-vpn-cli list --user-id myuser
+$ exordos-vpn-cli list --user-id myuser
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━┳━━━━━━━━┓
 ┃ uuid                                 ┃ user_id  ┃ name ┃ status ┃
 ┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━╇━━━━━━━━┩
@@ -12,14 +12,14 @@ $ genesis-vpn-cli list --user-id myuser
 └──────────────────────────────────────┴──────────┴──────┴────────┘
 
 # Create new config
-$ genesis-vpn-cli create USER_NAME CERT_NAME
+$ exordos-vpn-cli create USER_NAME CERT_NAME
 
 # Regen config
-$ genesis-vpn-cli generate_config 7759546f-007a-4efc-a37f-08aaf427a05f
+$ exordos-vpn-cli generate_config 7759546f-007a-4efc-a37f-08aaf427a05f
 Configuration file generated at /etc/openvpn/easy-rsa/configs/myuser.main.ovpn
 
 # Block cert (user won't be connected with this cert in this case)
-$ genesis-vpn-cli disable 7759546f-007a-4efc-a37f-08aaf427a05f
+$ exordos-vpn-cli disable 7759546f-007a-4efc-a37f-08aaf427a05f
 ```
 
 ### Server config recommendations
@@ -34,7 +34,7 @@ $ genesis-vpn-cli disable 7759546f-007a-4efc-a37f-08aaf427a05f
 ### Client specifics and recommendations
 
 #### Common
-- see [etc/genesis_vpn/client_config.j2](etc/genesis_vpn/client_config.j2) for config optimized for majority of clients:
+- see [etc/exordos_vpn/client_config.j2](etc/exordos_vpn/client_config.j2) for config optimized for majority of clients:
   - inline files should be declared without additional `inline` phrase
   - use `key-direction 1` with inline `tls-auth` block instead of `tls-auth 1 inline`
 - **It's recommended** not to push any `DOMAIN-SEARCH` records from server and just use private DNS for everything, unfortunately clients without `DOMAIN-SEARCH` support may just ignore all DNS pushes, which is equal to not working private DNS at all
