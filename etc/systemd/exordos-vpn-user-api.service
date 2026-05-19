@@ -1,0 +1,13 @@
+[Unit]
+Description=Genesis VPN User API
+After=network-online.target
+
+[Service]
+TimeoutStopSec=5
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGINT
+ExecStart=exordos-vpn-user-api --config-file /etc/exordos_vpn/exordos_vpn.conf
+
+[Install]
+WantedBy=multi-user.target

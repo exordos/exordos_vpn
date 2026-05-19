@@ -14,15 +14,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import pbr.version
 
-version_info = pbr.version.VersionInfo("exordos_vpn")
-
-
-def main() -> None:
-    print(version_info.release_string())
-    return None
-
-
-if __name__ == "__main__":
-    main()
+GLOBAL_SERVICE_NAME = "exordos_vpn"
+COMMON_DOMAIN = "common"

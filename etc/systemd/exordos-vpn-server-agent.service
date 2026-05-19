@@ -1,0 +1,13 @@
+[Unit]
+Description=Genesis VPN Server Agent
+After=network-online.target
+
+[Service]
+TimeoutStopSec=5
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGINT
+ExecStart=exordos-vpn-server-agent --config-file /etc/exordos_vpn/exordos_vpn.conf
+
+[Install]
+WantedBy=multi-user.target

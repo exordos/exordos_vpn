@@ -1,0 +1,25 @@
+# Build section. It specifies the build process of the project
+build:
+
+  # Dependencies of the project
+  deps:
+      # Target path in the image
+    - dst: /opt/exordos_vpn
+      # Local path
+      path:
+        src: ../../exordos_vpn
+
+  # List of elements in the project
+  elements:
+    # List of images in the element
+    - images:
+      - name: exordos-vpn
+        format: raw
+
+        # OS profile for the image
+        profile: ubuntu_24
+
+        # Provisioning script
+        script: images/install.sh
+      # manifest: manifests/exordos-core.yaml
+

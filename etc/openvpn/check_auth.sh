@@ -16,7 +16,7 @@
 #    under the License.
 
 # OpenVPN auth-user-pass-verify script (via-file mode).
-# Calls the genesis_vpn auth endpoint to verify PIN + OTP.
+# Calls the exordos_vpn auth endpoint to verify PIN + OTP.
 #
 # File format (via-file): line 1 = username, line 2 = password
 

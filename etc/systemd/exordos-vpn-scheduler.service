@@ -1,0 +1,13 @@
+[Unit]
+Description=Genesis VPN Scheduler
+After=network-online.target
+
+[Service]
+TimeoutStopSec=40
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGINT
+ExecStart=exordos-vpn-scheduler --config-file /etc/exordos_vpn/exordos_vpn.conf
+
+[Install]
+WantedBy=multi-user.target
