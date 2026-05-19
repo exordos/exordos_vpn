@@ -38,7 +38,7 @@ apt update
 apt install -y \
     postgresql \
     libev-dev \
-    python3.12-venv \
+    python3.14-venv \
     python3-dev
 
 # Default creds for genesis notification services
@@ -101,7 +101,7 @@ export EASYRSA_CERT_EXPIRE=3650
 ./easyrsa gen-dh
 
 ./easyrsa sign-req server $SERVER_NAME
-openvpn --genkey --secret ta.key
+openvpn --genkey secret ta.key
 
 cp ta.key pki/dh.pem pki/ca.crt "pki/issued/$SERVER_NAME.crt" "pki/private/$SERVER_NAME.key" /etc/openvpn/
 
