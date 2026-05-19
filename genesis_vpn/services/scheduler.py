@@ -1,4 +1,4 @@
-#    Copyright 2025 Genesis Corporation.
+#    Copyright 2025-2026 Genesis Corporation.
 #
 #    All Rights Reserved.
 #
@@ -38,7 +38,7 @@ class SchedulerService(basic.BasicService):
         with self._ctx.session_manager() as s:
             rowcount = s.execute(
                 """\
-update certificates set address_offset=NULL where status='DISABLED' and address_offset is not null and updated_at < %s""",
+update accounts set address_offset=NULL where status='DISABLED' and address_offset is not null and updated_at < %s""",
                 (delta,),
             ).rowcount
         if rowcount > 0:

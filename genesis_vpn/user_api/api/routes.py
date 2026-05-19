@@ -1,4 +1,4 @@
-#    Copyright 2025 Genesis Corporation.
+#    Copyright 2025-2026 Genesis Corporation.
 #
 #    All Rights Reserved.
 #
@@ -30,9 +30,27 @@ class CertificateRoute(routes.Route):
     get_ovpn_config = routes.action(CertificateActions)
 
 
+class AccountRoute(routes.Route):
+    __controller__ = controllers.AccountController
+    __allow_methods__ = [routes.FILTER, routes.CREATE, routes.GET]
+
+
+class OtpDeviceRoute(routes.Route):
+    __controller__ = controllers.OtpDeviceController
+    __allow_methods__ = [routes.FILTER, routes.CREATE, routes.GET]
+
+
 class AddressesPerUserRoute(routes.Route):
     __allow_methods__ = [routes.FILTER]
     __controller__ = controllers.AddressesPerUserController
+
+
+class AuthRoute(routes.Route):
+    """Handler for /auth/ endpoint — no IAM auth required"""
+    __controller__ = controllers.AuthController
+    __allow_methods__ = []
+
+    verify = routes.action(routes.Action)
 
 
 class ApiEndpointRoute(routes.Route):
@@ -42,4 +60,7 @@ class ApiEndpointRoute(routes.Route):
     __allow_methods__ = [routes.FILTER]
 
     certificates = routes.route(CertificateRoute)
+    accounts = routes.route(AccountRoute)
+    otp_devices = routes.route(OtpDeviceRoute)
     addresses_per_user = routes.route(AddressesPerUserRoute)
+    auth = routes.route(AuthRoute)

@@ -1,4 +1,4 @@
-#    Copyright 2025 Genesis Corporation.
+#    Copyright 2025-2026 Genesis Corporation.
 #
 #    All Rights Reserved.
 #
@@ -48,33 +48,37 @@ class AgentService(basic.BasicService):
             filters = {
                 "updated_at": dm_filters.GE(self.last_processed_at),
             }
-            certs = models.Certificate.objects.get_all(
+            accounts = models.Account.objects.get_all(
                 session=s, filters=filters
             )
 
         for name, conf in self.prefixes.items():
-            self.process_instance(name, conf, certs)
+            self.process_instance(name, conf, accounts)
 
-        # TODO: sort certs by updated_at and use the last one here
+        # TODO: sort accounts by updated_at and use the last one here
         self.last_processed_at = iter_started - self.lag
 
-    def process_instance(self, name, conf, certs):
+    def process_instance(self, name, conf, accounts):
         cidr = netaddr.IPNetwork(conf.openvpn_subnet_cidr)
         dir = conf.openvpn_config_dir
         ccd_dir = os.path.join(dir, f"ccd_{name}" if name else "ccd")
         if not os.path.exists(ccd_dir):
             os.makedirs(ccd_dir)
-        for cert in certs:
-            LOG.info(f"({name})Processing certificate: {cert.common_name}")
-            ccd_file_path = os.path.join(ccd_dir, cert.common_name)
+        for account in accounts:
+            LOG.info(f"({name})Processing account: {account.account_name}")
+            ccd_file_path = os.path.join(ccd_dir, account.account_name)
             with open(ccd_file_path, "w") as f:
-                # If the certificate is disabled, disable the client in the CCD file.
-                if cert.status == "DISABLED":
+                # If the account is disabled, disable the client in CCD.
+                if account.status == "DISABLED":
                     f.write("disable\n")
-                    # Disabled cert don't need any other settings
+                    # Disabled account don't need any other settings
                     continue
 
-                # permanent IP address assignment based on the certificate's address offset.
-                f.write(
-                    f"ifconfig-push {cidr.network + cert.address_offset} {cidr.netmask}\n"
-                )
+                # permanent IP address assignment based on the
+                # account's address offset.
+                if account.address_offset:
+                    f.write(
+                        f"ifconfig-push "
+                        f"{cidr.network + account.address_offset} "
+                        f"{cidr.netmask}\n"
+                    )

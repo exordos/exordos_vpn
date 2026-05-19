@@ -1,4 +1,4 @@
-#    Copyright 2025 Genesis Corporation.
+#    Copyright 2025-2026 Genesis Corporation.
 #
 #    All Rights Reserved.
 #
@@ -31,6 +31,7 @@ from genesis_vpn import version as app_version
 skip_auth_endpoints = [
     iam_mw.EndpointComparator("/"),
     iam_mw.EndpointComparator("/v1/"),
+    iam_mw.EndpointComparator("/v1/auth/verify", method="POST"),
 ]
 
 

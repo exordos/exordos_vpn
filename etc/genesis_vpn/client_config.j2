@@ -18,15 +18,21 @@ ping-restart 60
 key-direction 1
 reneg-sec 0
 
-<ca>
-{{ca}}
-</ca>
+{% if cert %}
 <cert>
 {{cert}}
 </cert>
+{% endif %}
+{% if key %}
 <key>
 {{key}}
 </key>
+{% endif %}
+auth-user-pass
+
+<ca>
+{{ca}}
+</ca>
 <tls-auth>
 {{tls_auth}}
 </tls-auth>

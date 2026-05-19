@@ -17,8 +17,18 @@
 
 PERMS_VIEWER = [
     "vpn.certificates.read",
+    "vpn.accounts.read",
+    "vpn.otp_devices.read",
 ]
 
-ALL_PERMS = set(PERMS_VIEWER)
+PERMS_EDITOR = PERMS_VIEWER + [
+    "vpn.accounts.write",
+    "vpn.otp_devices.write",
+]
 
-ROLES = {"vpn_viewer": PERMS_VIEWER}
+ALL_PERMS = set(PERMS_EDITOR)
+
+ROLES = {
+    "vpn_viewer": PERMS_VIEWER,
+    "vpn_editor": PERMS_EDITOR,
+}
