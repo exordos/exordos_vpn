@@ -1,5 +1,5 @@
 # Copyright 2016 Eugene Frolov <eugene@frolov.net.ru>
-# Copyright 2025 Genesis Corporation
+# Copyright 2025-2026 Genesis Corporation
 #
 # All Rights Reserved.
 #
@@ -33,52 +33,62 @@ class MigrationStep(migrations.AbstarctMigrationStep):
 
     def upgrade(self, session):
         expressions = [
-            # """
-            # CREATE TABLE "users" (
-            #     "uuid" CHAR(36) PRIMARY KEY,
-            #     "username" VARCHAR(256) NOT NULL UNIQUE,
-            #     "created_at" TIMESTAMP(6) NOT NULL DEFAULT NOW(),
-            #     "updated_at" TIMESTAMP(6) NOT NULL DEFAULT NOW()
-            # );
-            # """,
-            # """
-            # CREATE TABLE "networks" (
-            #     "uuid" CHAR(36) PRIMARY KEY,
-            #     "name" VARCHAR(256) NOT NULL UNIQUE,
-            #     "subnet" cidr,
-            #     "gateway" inet,
-            #     "created_at" TIMESTAMP(6) NOT NULL DEFAULT NOW(),
-            #     "updated_at" TIMESTAMP(6) NOT NULL DEFAULT NOW()
-            # );
-            # """,
-            # """
-            # CREATE TABLE "ipam" (
-            #     "uuid" CHAR(36) PRIMARY KEY,
-            #     "network_id" uuid REFERENCES networks(uuid) ON DELETE RESTRICT,
-            #     "address" inet,
-            #     "created_at" TIMESTAMP(6) NOT NULL DEFAULT NOW(),
-            #     "updated_at" TIMESTAMP(6) NOT NULL DEFAULT NOW()
-            # );
-            # CREATE UNIQUE INDEX ON ipam (network_id, address);
-            # """,
-            """
-            CREATE TYPE "certificates_status" AS ENUM ('ACTIVE', 'DISABLED');
-            """,
             """
             CREATE SEQUENCE serial_number;
             """,
             """
+            CREATE TYPE "accounts_status" AS ENUM ('ACTIVE', 'DISABLED');
+            """,
+            """
+            CREATE TYPE "accounts_auth_type" AS ENUM (
+                'password_only', 'cert_and_password'
+            );
+            """,
+            """
+            CREATE TYPE "otp_devices_status" AS ENUM ('ACTIVE', 'DISABLED');
+            """,
+            """
+            CREATE TYPE "otp_devices_otp_type" AS ENUM ('totp');
+            """,
+            """
+            CREATE TABLE "accounts" (
+                "uuid" UUID PRIMARY KEY,
+                "user_id" VARCHAR(36) NOT NULL,
+                "account_name" VARCHAR(256) NOT NULL UNIQUE,
+                "auth_type" accounts_auth_type NOT NULL
+                    DEFAULT 'password_only',
+                "status" accounts_status NOT NULL DEFAULT 'ACTIVE',
+                "pin_length" INTEGER NOT NULL DEFAULT 10,
+                "address_offset" int UNIQUE,
+                "pin_salt" VARCHAR(256),
+                "pin_hash" VARCHAR(256) NOT NULL,
+                "created_at" TIMESTAMP(6) NOT NULL DEFAULT NOW(),
+                "updated_at" TIMESTAMP(6) NOT NULL DEFAULT NOW()
+            );
+            """,
+            """
+            CREATE TABLE "otp_devices" (
+                "uuid" UUID PRIMARY KEY,
+                "account" UUID NOT NULL REFERENCES accounts(uuid)
+                    ON DELETE CASCADE,
+                "name" VARCHAR(256) DEFAULT '',
+                "otp_secret" VARCHAR(1024) NOT NULL,
+                "otp_type" otp_devices_otp_type NOT NULL DEFAULT 'totp',
+                "status" otp_devices_status NOT NULL DEFAULT 'ACTIVE',
+                "created_at" TIMESTAMP(6) NOT NULL DEFAULT NOW(),
+                "updated_at" TIMESTAMP(6) NOT NULL DEFAULT NOW()
+            );
+            """,
+            """
             CREATE TABLE "certificates" (
                 "uuid" UUID PRIMARY KEY,
-                "name" VARCHAR(36),
-                "common_name" VARCHAR(256) NOT NULL UNIQUE,
-                "status" certificates_status NOT NULL DEFAULT 'ACTIVE',
                 "user_id" VARCHAR(36),
                 "key" VARCHAR(4096),
                 "req" VARCHAR(4096),
                 "cert" VARCHAR(4096),
                 "serial" numeric UNIQUE,
-                "address_offset" int UNIQUE,
+                "account" UUID NOT NULL REFERENCES accounts(uuid)
+                    ON DELETE CASCADE,
                 "created_at" TIMESTAMP(6) NOT NULL DEFAULT NOW(),
                 "updated_at" TIMESTAMP(6) NOT NULL DEFAULT NOW()
             );
@@ -89,21 +99,27 @@ class MigrationStep(migrations.AbstarctMigrationStep):
             session.execute(expression)
 
     def downgrade(self, session):
-        views = []
-
         tables = [
             "certificates",
-            # "ipam",
-            # "users",
+            "otp_devices",
+            "accounts",
         ]
-
-        for view in views:
-            self._delete_view_if_exists(session, view)
 
         for table in tables:
             self._delete_table_if_exists(session, table)
 
-        session.execute('DROP TYPE IF EXISTS "certificates_status" CASCADE;')
+        session.execute(
+            'DROP TYPE IF EXISTS "otp_devices_otp_type" CASCADE;'
+        )
+        session.execute(
+            'DROP TYPE IF EXISTS "otp_devices_status" CASCADE;'
+        )
+        session.execute(
+            'DROP TYPE IF EXISTS "accounts_auth_type" CASCADE;'
+        )
+        session.execute(
+            'DROP TYPE IF EXISTS "accounts_status" CASCADE;'
+        )
         session.execute("DROP SEQUENCE IF EXISTS serial_number;")
 
 

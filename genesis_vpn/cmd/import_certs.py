@@ -1,4 +1,4 @@
-#    Copyright 2025 Genesis Corporation.
+#    Copyright 2025-2026 Genesis Corporation.
 #
 #    All Rights Reserved.
 #
@@ -19,6 +19,8 @@ import glob
 import logging
 import os
 from pathlib import Path
+import secrets
+import string
 import sys
 
 from oslo_config import cfg
@@ -85,10 +87,27 @@ def main():
                 clientkey = cert.dump_file_in_mem(key).decode("utf-8")
                 clientcert = cert.dump_file_in_mem(crt).decode("utf-8")
 
+                # Create an account for this certificate
+                pin = "".join(
+                    secrets.choice(string.digits) for _ in range(10)
+                )
+                account = models.Account(
+                    user_id=name,
+                    account_name=name,
+                    pin=pin,
+                    auth_type="cert_and_password",
+                )
+                account.save(session=s)
+                log.info(
+                    "Created account %s (%s), PIN: %s",
+                    account.uuid,
+                    account.account_name,
+                    pin,
+                )
+
                 certificate = models.Certificate(
                     user_id=name,
-                    name=name,
-                    common_name=name,
+                    account=account,
                     serial=decimal.Decimal(crt.get_serial_number()),
                     key=clientkey,
                     req=csrkey,

@@ -116,6 +116,25 @@ service_config_opts = [
         default="",
         help="Privatebin endpoint to paste config to. Can be disabled with --disable-pbin.",
     ),
+    cfg.StrOpt(
+        "global-salt",
+        required=True,
+        help="Global salt for PIN hashing (base64-encoded, 24+ chars). "
+        "Used by ModelWithSecret mixin.",
+    ),
+    cfg.StrOpt(
+        "otp-encryption-key",
+        required=True,
+        secret=True,
+        help="Hex-encoded 32-byte key for AES-256-GCM encryption "
+        "of OTP secrets at rest.",
+    ),
+    cfg.BoolOpt(
+        "generate-certs",
+        default=True,
+        help="Whether to generate certificates for new accounts. "
+        "If False, accounts are created with password_only auth.",
+    ),
 ]
 
 
