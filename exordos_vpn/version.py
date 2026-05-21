@@ -14,15 +14,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import pbr.version
+from importlib.metadata import version
 
-version_info = pbr.version.VersionInfo("exordos_vpn")
-
-
-def main() -> None:
-    print(version_info.release_string())
-    return None
+version_info = version("exordos_vpn")
 
 
 if __name__ == "__main__":
-    main()
+    print(version_info)

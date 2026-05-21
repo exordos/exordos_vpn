@@ -23,6 +23,7 @@ import uuid
 from oslo_config import cfg
 from restalchemy.common import contexts
 from restalchemy.common import exceptions as ra_exceptions
+from restalchemy.dm import filters as dm_filters
 from restalchemy.dm import models
 from restalchemy.dm import properties
 from restalchemy.dm import relationships
@@ -51,7 +52,7 @@ class InvalidPinError(ra_exceptions.RestAlchemyException):
     code = 400
 
 
-MIN_PIN_LENGTH = 10
+MIN_PIN_LENGTH = 6
 
 
 def _generate_salt(length=18):
@@ -84,7 +85,7 @@ class Account(CommonModel):
     )
     status = properties.property(types.Enum(("ACTIVE", "DISABLED")), default="ACTIVE")
     pin_length = properties.property(
-        types.Integer(min_value=10, max_value=128), default=10
+        types.Integer(min_value=6, max_value=128), default=6
     )
     address_offset = properties.property(
         types.AllowNone(types.Integer(min_value=2, max_value=4096))
@@ -114,8 +115,7 @@ limit 1;""",
         )
 
     def __init__(self, account_name=None, pin=None, address_offset=None, **kwargs):
-        my_uuid = uuid.uuid4()
-        account_name = account_name or str(my_uuid)
+        account_name = account_name or kwargs.get("user_id", "")
 
         if not pin or len(pin) < MIN_PIN_LENGTH:
             raise InvalidPinError()
@@ -128,7 +128,6 @@ limit 1;""",
             address_offset = self.allocate_address_offset()
 
         super().__init__(
-            uuid=my_uuid,
             account_name=account_name,
             pin_salt=pin_salt,
             pin_hash=pin_hash,
@@ -142,6 +141,15 @@ limit 1;""",
         expected = _generate_pin_hash(pin, self.pin_salt, global_salt)
         return expected == self.pin_hash
 
+    def get_otp_devices(self, session=None):
+        """Get all OTP devices for this account."""
+        session = session or contexts.Context().get_session()
+        rels = AccountOtpDevice.objects.get_all(
+            session=session,
+            filters={"account": dm_filters.EQ(self)},
+        )
+        return [rel.otp_device for rel in rels]
+
     def disable(self, session=None):
         self.status = "DISABLED"
         self.save(session=session)
@@ -150,7 +158,7 @@ limit 1;""",
 class OtpDevice(CommonModel):
     __tablename__ = "otp_devices"
 
-    account = relationships.relationship(Account, required=True)
+    user_id = properties.property(types.String(), required=True)
     name = properties.property(types.String(), default="")
     otp_secret = properties.property(types.String(), required=True)
     otp_type = properties.property(types.Enum(("totp",)), default="totp")
@@ -255,3 +263,12 @@ class Certificate(CommonModel):
 
     def disable(self, session=None):
         self.account.disable(session=session)
+
+
+class AccountOtpDevice(models.ModelWithUUID, orm.SQLStorableMixin):
+    """Many-to-many relationship between Account and OtpDevice."""
+
+    __tablename__ = "account_otp_devices"
+
+    account = relationships.relationship(Account, required=True)
+    otp_device = relationships.relationship(OtpDevice, required=True)

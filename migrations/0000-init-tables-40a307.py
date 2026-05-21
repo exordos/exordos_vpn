@@ -68,14 +68,25 @@ class MigrationStep(migrations.AbstarctMigrationStep):
             """
             CREATE TABLE "otp_devices" (
                 "uuid" UUID PRIMARY KEY,
-                "account" UUID NOT NULL REFERENCES accounts(uuid)
-                    ON DELETE CASCADE,
+                "user_id" VARCHAR(36) NOT NULL,
                 "name" VARCHAR(256) DEFAULT '',
                 "otp_secret" VARCHAR(1024) NOT NULL,
                 "otp_type" otp_devices_otp_type NOT NULL DEFAULT 'totp',
                 "status" otp_devices_status NOT NULL DEFAULT 'ACTIVE',
                 "created_at" TIMESTAMP(6) NOT NULL DEFAULT NOW(),
                 "updated_at" TIMESTAMP(6) NOT NULL DEFAULT NOW()
+            );
+            """,
+            """
+            CREATE TABLE "account_otp_devices" (
+                "uuid" UUID PRIMARY KEY,
+                "account" UUID NOT NULL REFERENCES accounts(uuid)
+                    ON DELETE CASCADE,
+                "otp_device" UUID NOT NULL REFERENCES otp_devices(uuid)
+                    ON DELETE CASCADE,
+                "created_at" TIMESTAMP(6) NOT NULL DEFAULT NOW(),
+                "updated_at" TIMESTAMP(6) NOT NULL DEFAULT NOW(),
+                UNIQUE (account, otp_device)
             );
             """,
             """
@@ -100,6 +111,7 @@ class MigrationStep(migrations.AbstarctMigrationStep):
     def downgrade(self, session):
         tables = [
             "certificates",
+            "account_otp_devices",
             "otp_devices",
             "accounts",
         ]

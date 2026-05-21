@@ -14,6 +14,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from gcl_iam import drivers
 from gcl_iam import middlewares as iam_mw
 from restalchemy.api import applications
 from restalchemy.api.middlewares import logging as logging_mw
@@ -28,11 +29,7 @@ from exordos_vpn.user_api.api import versions
 from exordos_vpn import version as app_version
 
 
-skip_auth_endpoints = [
-    iam_mw.EndpointComparator("/"),
-    iam_mw.EndpointComparator("/v1/"),
-    iam_mw.EndpointComparator("/v1/auth/verify", method="POST"),
-]
+skip_auth_endpoints = []
 
 
 class UserApiApp(routes.RootRoute):
@@ -54,9 +51,9 @@ def get_api_application():
 def get_openapi_engine():
     openapi_engine = openapi_engines.OpenApiEngine(
         info=openapi_structures.OpenApiInfo(
-            title=f"Genesis VPN {versions.API_VERSION_1_0} User API",
-            version=app_version.version_info.release_string(),
-            description=(f"OpenAPI - Genesis VPN {versions.API_VERSION_1_0}"),
+            title=f"Exordos VPN {versions.API_VERSION_1_0} User API",
+            version=app_version.version_info,
+            description=(f"OpenAPI - Exordos VPN {versions.API_VERSION_1_0}"),
         ),
         paths=openapi_structures.OpenApiPaths(),
         components=openapi_structures.OpenApiComponents(),
@@ -64,7 +61,7 @@ def get_openapi_engine():
     return openapi_engine
 
 
-def build_wsgi_application(token_algorithm, iam_engine_driver=None):
+def build_wsgi_application(iam_engine_driver):
     return middlewares.attach_middlewares(
         applications.OpenApiApplication(
             route_class=get_api_application(),
@@ -73,7 +70,6 @@ def build_wsgi_application(token_algorithm, iam_engine_driver=None):
         [
             middlewares.configure_middleware(
                 iam_mw.GenesisCoreAuthMiddleware,
-                token_algorithm=token_algorithm,
                 iam_engine_driver=iam_engine_driver,
                 skip_auth_endpoints=skip_auth_endpoints,
             ),

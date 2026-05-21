@@ -49,9 +49,7 @@ class AuthRoute(routes.Route):
     """Handler for /auth/ endpoint — no IAM auth required"""
 
     __controller__ = controllers.AuthController
-    __allow_methods__ = []
-
-    verify = routes.action(routes.Action)
+    __allow_methods__ = [routes.CREATE]
 
 
 class ApiEndpointRoute(routes.Route):
