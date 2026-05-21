@@ -135,6 +135,11 @@ service_config_opts = [
         help="Whether to generate certificates for new accounts. "
         "If False, accounts are created with password_only auth.",
     ),
+    cfg.StrOpt(
+        "otp-issuer-name",
+        default="ExordosVPN",
+        help="Issuer name for OTP provisioning URI (displayed in authenticator apps).",
+    ),
 ]
 
 

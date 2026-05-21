@@ -15,6 +15,7 @@
 #    under the License.
 
 import collections
+import logging
 import urllib.parse
 
 import netaddr
@@ -33,8 +34,10 @@ from restalchemy.dm import filters as dm_filters
 from exordos_vpn.common import constants as c
 from exordos_vpn.common import ovpn_config
 from exordos_vpn.dm import models
+from exordos_vpn.dm import models as vpn_models
 from exordos_vpn.user_api.api import versions
 
+LOG = logging.getLogger(__name__)
 
 CONF = cfg.CONF
 
@@ -167,24 +170,36 @@ class AuthController(ra_controllers.Controller):
     Called by OpenVPN auth-user-pass-verify script via localhost.
     """
 
-    @actions.post
-    def verify(self, account_name, password, **kwargs):
+    def create(self, account_name, password, **kwargs):
         """Verify PIN + OTP for an account.
 
         Args:
             account_name: The account name (OpenVPN username).
             password: Combined PIN + OTP code.
         """
+        ctx = self.get_context()
         account = models.Account.objects.get_one_or_none(
             filters={"account_name": dm_filters.EQ(account_name)}
         )
 
         if not account or account.status != "ACTIVE":
+            LOG.info(
+                "IAM AUDIT: login failed account_name=%s ip=%s reason=%s",
+                account_name,
+                ctx.get_user_ip(),
+                "account_not_found" if not account else "account_not_active",
+            )
             raise AuthVerifyError()
 
         # Split password: first pin_length chars = PIN, rest = OTP
         pin_length = account.pin_length
         if len(password) < pin_length + 6:
+            LOG.info(
+                "IAM AUDIT: login failed account_name=%s ip=%s reason=%s",
+                account_name,
+                ctx.get_user_ip(),
+                "short_pin",
+            )
             raise AuthVerifyError()
 
         pin = password[:pin_length]
@@ -192,17 +207,34 @@ class AuthController(ra_controllers.Controller):
 
         # Verify PIN
         if not account.check_pin(pin):
+            LOG.info(
+                "IAM AUDIT: login failed account_name=%s ip=%s reason=%s",
+                account_name,
+                ctx.get_user_ip(),
+                "wrong_pin",
+            )
             raise AuthVerifyError()
 
         # Verify OTP against all active devices
-        otp_devices = models.OtpDevice.objects.get_all(
+        account_otp_devices = vpn_models.AccountOtpDevice.objects.get_all(
             filters={
-                "account": dm_filters.EQ(str(account.uuid)),
-                "status": dm_filters.EQ("ACTIVE"),
+                "account": dm_filters.EQ(account),
             }
         )
 
+        otp_devices = [
+            rel.otp_device
+            for rel in account_otp_devices
+            if rel.otp_device.status == "ACTIVE"
+        ]
+
         if not otp_devices:
+            LOG.info(
+                "IAM AUDIT: login failed account_name=%s ip=%s reason=%s",
+                account_name,
+                ctx.get_user_ip(),
+                "no_active_otp_devices",
+            )
             raise AuthVerifyError()
 
         otp_valid = False
@@ -217,6 +249,18 @@ class AuthController(ra_controllers.Controller):
                 continue
 
         if not otp_valid:
+            LOG.info(
+                "IAM AUDIT: login failed account_name=%s ip=%s reason=%s",
+                account_name,
+                ctx.get_user_ip(),
+                "wrong_otp",
+            )
             raise AuthVerifyError()
 
-        return {"status": "ok"}
+        LOG.info(
+            "IAM AUDIT: login succeeded account_name=%s ip=%s",
+            account_name,
+            ctx.get_user_ip(),
+        )
+
+        return {"status": "ok"}, 200, None, False

@@ -51,11 +51,8 @@ cp "$GC_PATH/etc/exordos_vpn/exordos_vpn.conf" $GC_CFG_DIR/
 cp "$GC_PATH/etc/exordos_vpn/logging.yaml" $GC_CFG_DIR/
 cp "$GC_PATH/etc/exordos_vpn/client_config.j2" $GC_CFG_DIR/
 
-mkdir -p "$VENV_PATH"
-python3 -m venv "$VENV_PATH"
-source "$GC_PATH"/.venv/bin/activate
-pip install uv --upgrade
-uv pip install -e "$GC_PATH"
+uv sync
+source "$GC_PATH/.venv/bin/activate"
 
 # Apply migrations
 ra-apply-migration --config-dir "$GC_CFG_DIR/" --path "$GC_PATH/migrations"
@@ -105,13 +102,14 @@ openvpn --genkey secret ta.key
 cp ta.key pki/dh.pem pki/ca.crt "pki/issued/$SERVER_NAME.crt" "pki/private/$SERVER_NAME.key" /etc/openvpn/
 
 
-cat $GC_PATH/etc/sysctl.conf >> /etc/sysctl.conf
+cat $GC_PATH/etc/sysctl.conf >> /etc/sysctl.d/90-exordos-vpn.conf
 
 cp "$GC_PATH/etc/openvpn/$SERVER_NAME.conf" "/etc/openvpn/"
-
-systemctl enable "openvpn@$SERVER_NAME"
-
+cp "$GC_PATH/etc/openvpn/check_auth.sh" "/etc/openvpn/"
+chmod 500 "/etc/openvpn/check_auth.sh"
 
 mkdir /etc/openvpn/ccd/
+
+systemctl enable "openvpn@$SERVER_NAME"
 
 # To create client config, use exordos-vpn-cli

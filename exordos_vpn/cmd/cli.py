@@ -46,9 +46,9 @@ ra_config_opts.register_posgresql_db_opts(CONF)
 config.register_service_config_opts()
 
 
-def _generate_pin(length=10):
-    """Generate a random numeric PIN of the given length."""
-    alphabet = string.digits
+def _generate_pin(length=6):
+    """Generate a random PIN with letters and digits of the given length."""
+    alphabet = string.ascii_letters + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
@@ -65,12 +65,13 @@ def _build_credentials_text(account_name, pin, otp_uri):
     qr_text = buf.getvalue()
 
     return (
-        f"GenesisVPN Credentials\n"
+        f"VPN Credentials\n"
         f"=====================\n\n"
         f"Login: {account_name}\n"
         f"PIN: {pin}\n\n"
         f"OTP Setup\n"
         f"---------\n"
+        f"0. Download config file (from attachment)\n"
         f"1. Scan the QR code below with your authenticator app\n"
         f"2. When connecting, enter: PIN + OTP code\n\n"
         f"{qr_text}\n\n"
@@ -88,36 +89,39 @@ def _resolve_otp_device(session, account, otp_uuid=None):
     """
     if otp_uuid:
         filters = {
-            "uuid": dm_filters.EQ(otp_uuid),
-            "account": dm_filters.EQ(str(account.uuid)),
+            "otp_device": dm_filters.EQ(otp_uuid),
+            "account": dm_filters.EQ(account),
         }
-        device = models.OtpDevice.objects.get_one(session=session, filters=filters)
-        return device, False  # (device, created=False)
+        rel = models.AccountOtpDevice.objects.get_one(session=session, filters=filters)
+        return rel.otp_device, False  # (device, created=False)
 
-    filters = {"account": dm_filters.EQ(str(account.uuid))}
-    devices = models.OtpDevice.objects.get_all(session=session, filters=filters)
+    filters = {"account": dm_filters.EQ(account)}
+    rels = models.AccountOtpDevice.objects.get_all(session=session, filters=filters)
 
-    if len(devices) == 0:
+    if len(rels) == 0:
         # No OTP device exists — create one
         otp_secret = pyotp.random_base32()
         device = models.OtpDevice(
             otp_secret=otp_secret,
             name="Default",
-            account=account,
+            user_id=account.user_id,
         )
         device.save(session=session)
+        rel = models.AccountOtpDevice(account=account, otp_device=device)
+        rel.save(session=session)
         return device, True  # (device, created)
-    elif len(devices) == 1:
-        return devices[0], False
+    elif len(rels) == 1:
+        return rels[0].otp_device, False
     else:
         CONSOLE.print(
-            f"Account has {len(devices)} OTP devices. Please specify --otp-uuid."
+            f"Account has {len(rels)} OTP devices. Please specify --otp-uuid."
         )
         table = Table(show_header=True, header_style="bold magenta")
         table.add_column("uuid", style="dim", width=36)
         table.add_column("name")
         table.add_column("status")
-        for d in devices:
+        for rel in rels:
+            d = rel.otp_device
             table.add_row(str(d.uuid), d.name, d.status)
         CONSOLE.print(table)
         raise SystemExit(1)
@@ -138,13 +142,13 @@ def add_parsers(subparsers):
     account_create_action = subparsers.add_parser("account-create")
     account_create_action.add_argument("user_id", type=str.lower)
     account_create_action.add_argument(
-        "--name",
+        "--account-name",
         type=str.lower,
         default=None,
         help="Account name (auto-generated if not provided)",
     )
     account_create_action.add_argument(
-        "--pin-length", type=int, default=10, help="PIN length (min 10, auto-generated)"
+        "--pin-length", type=int, default=6, help="PIN length (min 6, auto-generated)"
     )
     account_create_action.add_argument("--disable-pbin", action="store_true")
 
@@ -232,8 +236,10 @@ def account_create(session, conf):
     kwargs["pin"] = pin
     kwargs["pin_length"] = conf.pin_length
     kwargs["auth_type"] = auth_type
-    if conf.name:
-        kwargs["account_name"] = conf.name
+    kwargs["account_name"] = conf.account_name or conf.user_id
+
+    if not kwargs["account_name"].startswith(conf.user_id):
+        kwargs["account_name"] = f"{conf.user_id}_{kwargs['account_name']}"
 
     account = models.Account(**kwargs)
     account.save(session=session)
@@ -249,11 +255,12 @@ def account_create(session, conf):
 
     # Resolve OTP device (new account — will create one)
     device, otp_created = _resolve_otp_device(session, account)
-    otp_secret = device.otp_secret
+    otp_secret = device.get_decrypted_secret()
 
     # Generate OTP provisioning URI and QR code
     otp_uri = pyotp.TOTP(otp_secret).provisioning_uri(
-        name=account.account_name, issuer_name="GenesisVPN"
+        name=account.account_name,
+        issuer_name=CONF[c.COMMON_DOMAIN].otp_issuer_name,
     )
 
     CONSOLE.print(f"Account created with uuid: {account.uuid}")
@@ -333,11 +340,13 @@ def account_generate_config(session, conf):
         # Find the linked certificate for the standard template
         cert_filters = {"account": dm_filters.EQ(str(account.uuid))}
         cert = models.Certificate.objects.get_one(session=session, filters=cert_filters)
-        with open(config_file, "w") as f:
+        fd = os.open(config_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o660)
+        with os.fdopen(fd, "w") as f:
             f.write(ovpn_config.generate_ovpn_config(cert))
     else:
         # password_only — 2FA config without cert/key
-        with open(config_file, "w") as f:
+        fd = os.open(config_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o660)
+        with os.fdopen(fd, "w") as f:
             f.write(ovpn_config.generate_ovpn_config(account))
 
     CONSOLE.print(f"Configuration file generated at {config_file}")
@@ -352,12 +361,15 @@ def otp_add(session, conf):
     device = models.OtpDevice(
         otp_secret=secret,
         name=conf.name,
-        account=account,
+        user_id=account.user_id,
     )
     device.save(session=session)
+    rel = models.AccountOtpDevice(account=account, otp_device=device)
+    rel.save(session=session)
 
     uri = pyotp.TOTP(secret).provisioning_uri(
-        name=account.account_name, issuer_name="GenesisVPN"
+        name=account.account_name,
+        issuer_name=CONF[c.COMMON_DOMAIN].otp_issuer_name,
     )
     CONSOLE.print(f"OTP device added: {device.uuid}")
     CONSOLE.print(f"Device name: {device.name}")
@@ -369,13 +381,14 @@ def otp_add(session, conf):
 
 def otp_list(session, conf):
     filters = {"account": dm_filters.EQ(conf.account_uuid)}
-    devices = models.OtpDevice.objects.get_all(session=session, filters=filters)
+    rels = models.AccountOtpDevice.objects.get_all(session=session, filters=filters)
     table = Table(show_header=True, header_style="bold magenta")
     table.add_column("uuid", style="dim", width=36)
     table.add_column("name")
     table.add_column("otp_type")
     table.add_column("status", justify="right")
-    for device in devices:
+    for rel in rels:
+        device = rel.otp_device
         table.add_row(
             str(device.uuid),
             device.name,

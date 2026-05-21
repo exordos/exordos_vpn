@@ -19,21 +19,32 @@
 # Calls the exordos_vpn auth endpoint to verify PIN + OTP.
 #
 # File format (via-file): line 1 = username, line 2 = password
+#
+# OpenVPN environment variables:
+# $trusted_ip - client IP address (preferred)
+# $untrusted_ip - client IP address (fallback)
 
-AUTH_ENDPOINT="http://127.0.0.1:8082/v1/auth/verify"
+AUTH_ENDPOINT="http://127.0.0.1:81/v1/auth/"
 
 readarray -t lines < "$1"
 
 username="${lines[0]}"
 password="${lines[1]}"
+client_ip="${trusted_ip:-${untrusted_ip}}"
 
 # Escape special characters for JSON
 username=$(echo "$username" | sed 's/"/\\"/g')
 password=$(echo "$password" | sed 's/"/\\"/g')
 
+# Cert name should be equal to username
+if [ "$username" != "$common_name" ]; then
+    exit 1
+fi
+
 response=$(curl -s -o /dev/null -w "%{http_code}" \
   -X POST "$AUTH_ENDPOINT" \
   -H "Content-Type: application/json" \
+  -H "X-Forwarded-For: ${client_ip}" \
   -d "{\"account_name\":\"${username}\",\"password\":\"${password}\"}" \
   --connect-timeout 2 \
   --max-time 5)
