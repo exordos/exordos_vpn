@@ -50,6 +50,9 @@ class MigrationStep(migrations.AbstarctMigrationStep):
             CREATE TYPE "otp_devices_otp_type" AS ENUM ('totp');
             """,
             """
+            CREATE TYPE "accounts_network_access_type" AS ENUM ('ALL', 'RESTRICTED');
+            """,
+            """
             CREATE TABLE "accounts" (
                 "uuid" UUID PRIMARY KEY,
                 "user_id" VARCHAR(36) NOT NULL,
@@ -61,6 +64,9 @@ class MigrationStep(migrations.AbstarctMigrationStep):
                 "address_offset" int UNIQUE,
                 "pin_salt" VARCHAR(256),
                 "pin_hash" VARCHAR(256) NOT NULL,
+                "network_access_type" accounts_network_access_type
+                    NOT NULL DEFAULT 'RESTRICTED',
+                "network_access_tags" TEXT[] DEFAULT '{}',
                 "created_at" TIMESTAMP(6) NOT NULL DEFAULT NOW(),
                 "updated_at" TIMESTAMP(6) NOT NULL DEFAULT NOW()
             );
@@ -103,6 +109,24 @@ class MigrationStep(migrations.AbstarctMigrationStep):
                 "updated_at" TIMESTAMP(6) NOT NULL DEFAULT NOW()
             );
             """,
+            """
+            CREATE TABLE "services" (
+                "uuid" UUID PRIMARY KEY,
+                "name" VARCHAR(255) NOT NULL,
+                "subnets" TEXT[] NOT NULL,
+                "tags" TEXT[] DEFAULT '{}',
+                "description" VARCHAR(255) DEFAULT '',
+                "kinds" jsonb[],
+                "created_at" TIMESTAMP(6) NOT NULL DEFAULT NOW(),
+                "updated_at" TIMESTAMP(6) NOT NULL DEFAULT NOW()
+            );
+            """,
+            """
+            CREATE INDEX idx_accounts_updated_at ON accounts(updated_at);
+            """,
+            """
+            CREATE INDEX idx_services_updated_at ON services(updated_at);
+            """,
         ]
 
         for expression in expressions:
@@ -110,6 +134,7 @@ class MigrationStep(migrations.AbstarctMigrationStep):
 
     def downgrade(self, session):
         tables = [
+            "services",
             "certificates",
             "account_otp_devices",
             "otp_devices",
@@ -119,6 +144,7 @@ class MigrationStep(migrations.AbstarctMigrationStep):
         for table in tables:
             self._delete_table_if_exists(session, table)
 
+        session.execute('DROP TYPE IF EXISTS "accounts_network_access_type" CASCADE;')
         session.execute('DROP TYPE IF EXISTS "otp_devices_otp_type" CASCADE;')
         session.execute('DROP TYPE IF EXISTS "otp_devices_status" CASCADE;')
         session.execute('DROP TYPE IF EXISTS "accounts_auth_type" CASCADE;')

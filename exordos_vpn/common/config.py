@@ -95,6 +95,12 @@ service_config_opts = [
         default="client_config.j2",
         help="Path to the configuration template file",
     ),
+    cfg.StrOpt(
+        "credentials-template",
+        required=True,
+        default="credentials.txt.j2",
+        help="Path to the credentials text template file",
+    ),
     cfg.IntOpt(
         "new-cert-validity-days",
         default=3650,

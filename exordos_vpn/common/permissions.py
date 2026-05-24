@@ -1,4 +1,4 @@
-#    Copyright 2025 Genesis Corporation.
+#    Copyright 2025-2026 Genesis Corporation.
 #
 #    All Rights Reserved.
 #
@@ -19,11 +19,13 @@ PERMS_VIEWER = [
     "vpn.certificates.read",
     "vpn.accounts.read",
     "vpn.otp_devices.read",
+    "vpn.services.read",
 ]
 
 PERMS_EDITOR = PERMS_VIEWER + [
     "vpn.accounts.write",
     "vpn.otp_devices.write",
+    "vpn.services.write",
 ]
 
 ALL_PERMS = set(PERMS_EDITOR)
@@ -31,4 +33,5 @@ ALL_PERMS = set(PERMS_EDITOR)
 ROLES = {
     "vpn_viewer": PERMS_VIEWER,
     "vpn_editor": PERMS_EDITOR,
+    "vpn_admin": PERMS_EDITOR,
 }

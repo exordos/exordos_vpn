@@ -20,8 +20,8 @@ import urllib.parse
 
 import netaddr
 import pyotp
-from oslo_config import cfg
 from gcl_iam import controllers as iam_controllers
+from oslo_config import cfg
 from restalchemy.api import actions
 from restalchemy.api import controllers as ra_controllers
 from restalchemy.api import constants
@@ -132,6 +132,14 @@ class AccountController(
             fields={
                 "pin_salt": {constants.ALL: field_p.Permissions.HIDDEN},
                 "pin_hash": {constants.ALL: field_p.Permissions.HIDDEN},
+                "network_access_type": {
+                    constants.CREATE: field_p.Permissions.RW,
+                    constants.UPDATE: field_p.Permissions.RW,
+                },
+                "network_access_tags": {
+                    constants.CREATE: field_p.Permissions.RW,
+                    constants.UPDATE: field_p.Permissions.RW,
+                },
             },
         ),
     )
@@ -159,13 +167,32 @@ class OtpDeviceController(
     )
 
 
+class ServiceController(
+    iam_controllers.PolicyBasedWithoutProjectController,
+    ra_controllers.BaseResourceControllerPaginated,
+):
+    """Controller for /services/ endpoint.
+
+    Manages network services (subnets) that can be assigned to accounts
+    via tag-based access control.
+    """
+
+    __policy_service_name__ = "vpn"
+    __policy_name__ = "services"
+
+    __resource__ = resources.ResourceByRAModel(
+        models.Service,
+        convert_underscore=False,
+    )
+
+
 class AuthVerifyError(ra_exceptions.RestAlchemyException):
     message = "Authentication failed"
     code = 403
 
 
 class AuthController(ra_controllers.Controller):
-    """Controller for /auth/ endpoint — no IAM auth required.
+    """Controller for /auth/ endpoint - no IAM auth required.
 
     Called by OpenVPN auth-user-pass-verify script via localhost.
     """
@@ -245,7 +272,7 @@ class AuthController(ra_controllers.Controller):
                     otp_valid = True
                     break
             except Exception:
-                # Decryption or verification error — skip this device
+                # Decryption or verification error - skip this device
                 continue
 
         if not otp_valid:

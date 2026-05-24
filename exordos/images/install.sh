@@ -50,6 +50,7 @@ mkdir -p $GC_CFG_DIR
 cp "$GC_PATH/etc/exordos_vpn/exordos_vpn.conf" $GC_CFG_DIR/
 cp "$GC_PATH/etc/exordos_vpn/logging.yaml" $GC_CFG_DIR/
 cp "$GC_PATH/etc/exordos_vpn/client_config.j2" $GC_CFG_DIR/
+cp "$GC_PATH/etc/exordos_vpn/credentials.txt.j2" $GC_CFG_DIR/
 
 uv sync
 source "$GC_PATH/.venv/bin/activate"
@@ -69,10 +70,12 @@ ln -sf "$VENV_PATH/bin/exordos-vpn-cli" "/usr/bin/exordos-vpn-cli"
 cp "$GC_PATH/etc/systemd/exordos-vpn-user-api.service" $SYSTEMD_SERVICE_DIR
 cp "$GC_PATH/etc/systemd/exordos-vpn-server-agent.service" $SYSTEMD_SERVICE_DIR
 cp "$GC_PATH/etc/systemd/exordos-vpn-scheduler.service" $SYSTEMD_SERVICE_DIR
+cp "$GC_PATH/etc/systemd/exordos-vpn-user-api-local.service" $SYSTEMD_SERVICE_DIR
 
 # Enable exordos notification services
 systemctl enable \
     exordos-vpn-user-api \
+    exordos-vpn-user-api-local \
     exordos-vpn-server-agent \
     exordos-vpn-scheduler
 
@@ -111,5 +114,24 @@ chmod 500 "/etc/openvpn/check_auth.sh"
 mkdir /etc/openvpn/ccd/
 
 systemctl enable "openvpn@$SERVER_NAME"
+
+# DNS server
+apt install dnsdist
+
+# Config example
+# -- disable security status polling via DNS
+# setSecurityPollSuffix("")
+
+# addLocal("10.10.0.1:53")
+# newServer({address="1.1.1.1"})
+# newServer({address="8.8.8.8"})
+# newServer({address="10.10.0.2", pool="localdns"})
+# addAction({'your.local.domain.com'}, PoolAction("localdns"))
+
+# pc = newPacketCache(10000, {maxTTL=86400, minTTL=0, temporaryFailureTTL=60, staleTTL=60, dontAge=false})
+# getPool(""):setCache(pc)
+# pc_local = newPacketCache(10000, {maxTTL=86400, minTTL=0, temporaryFailureTTL=60, staleTTL=60, dontAge=false})
+# getPool("localdns"):setCache(pc_local)
+
 
 # To create client config, use exordos-vpn-cli
