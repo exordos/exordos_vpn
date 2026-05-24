@@ -20,20 +20,24 @@ import os
 import secrets
 import string
 import sys
+import uuid
 
+import jinja2
+
+import netaddr
+import pyotp
 import qrcode
+from oslo_config import cfg
+from restalchemy.common import config_opts as ra_config_opts
+from restalchemy.common import contexts
+from restalchemy.dm import filters as dm_filters
+from restalchemy.storage.sql import engines
 from rich.console import Console
 from rich.table import Table
 
-from oslo_config import cfg
-import pyotp
-from restalchemy.common import config_opts as ra_config_opts
-from restalchemy.dm import filters as dm_filters
-from restalchemy.storage.sql import engines
-from restalchemy.common import contexts
-
 from exordos_vpn.common import config
 from exordos_vpn.common import constants as c
+from exordos_vpn.common import firewall_kinds
 from exordos_vpn.common import log as infra_log
 from exordos_vpn.common import ovpn_config
 from exordos_vpn.common import privatebin
@@ -44,6 +48,36 @@ CONSOLE = Console()
 CONF = cfg.CONF
 ra_config_opts.register_posgresql_db_opts(CONF)
 config.register_service_config_opts()
+
+
+def _resolve_account(session, identifier):
+    """Resolve an account by UUID or account_name.
+
+    Tries UUID lookup first, then falls back to account_name.
+    Raises SystemExit if account is not found.
+    """
+    # Try UUID lookup if identifier is a valid UUID
+    try:
+        uuid.UUID(identifier)
+    except ValueError:
+        is_uuid = False
+    else:
+        is_uuid = True
+
+    if is_uuid:
+        filters = {"uuid": dm_filters.EQ(identifier)}
+        res = models.Account.objects.get_one_or_none(session=session, filters=filters)
+        if res:
+            return res
+
+    # Try account_name
+    filters = {"account_name": dm_filters.EQ(identifier)}
+    res = models.Account.objects.get_one_or_none(session=session, filters=filters)
+    if res:
+        return res
+
+    CONSOLE.print(f"[red]Account not found: {identifier}[/red]")
+    raise SystemExit(1)
 
 
 def _generate_pin(length=6):
@@ -64,18 +98,16 @@ def _build_credentials_text(account_name, pin, otp_uri):
     qr.print_ascii(out=buf)
     qr_text = buf.getvalue()
 
-    return (
-        f"VPN Credentials\n"
-        f"=====================\n\n"
-        f"Login: {account_name}\n"
-        f"PIN: {pin}\n\n"
-        f"OTP Setup\n"
-        f"---------\n"
-        f"0. Download config file (from attachment)\n"
-        f"1. Scan the QR code below with your authenticator app\n"
-        f"2. When connecting, enter: PIN + OTP code\n\n"
-        f"{qr_text}\n\n"
-        f"OTP URI: {otp_uri}\n"
+    template_file = CONF.find_file(
+        CONF[c.COMMON_DOMAIN].credentials_template
+    )
+    with open(template_file, "r") as f:
+        template = jinja2.Template(f.read())
+    return template.render(
+        account_name=account_name,
+        pin=pin,
+        qr_text=qr_text,
+        otp_uri=otp_uri,
     )
 
 
@@ -156,10 +188,10 @@ def add_parsers(subparsers):
     account_list_action.add_argument("--user-id", required=False)
 
     account_disable_action = subparsers.add_parser("account-disable")
-    account_disable_action.add_argument("uuid")
+    account_disable_action.add_argument("account", help="Account UUID or name")
 
     account_gen_config_action = subparsers.add_parser("account-generate-config")
-    account_gen_config_action.add_argument("uuid")
+    account_gen_config_action.add_argument("account", help="Account UUID or name")
     account_gen_config_action.add_argument(
         "--otp-uuid",
         default=None,
@@ -173,14 +205,60 @@ def add_parsers(subparsers):
 
     # OTP device management commands
     otp_add_action = subparsers.add_parser("otp-add")
-    otp_add_action.add_argument("account_uuid")
+    otp_add_action.add_argument("account", help="Account UUID or name")
     otp_add_action.add_argument("--name", default="Default", help="Device name")
 
     otp_list_action = subparsers.add_parser("otp-list")
-    otp_list_action.add_argument("account_uuid")
+    otp_list_action.add_argument("account", help="Account UUID or name")
 
     otp_remove_action = subparsers.add_parser("otp-remove")
     otp_remove_action.add_argument("uuid")
+
+    # Service management commands
+    service_create_action = subparsers.add_parser("service-create")
+    service_create_action.add_argument("name", type=str.lower)
+    service_create_action.add_argument(
+        "--subnets",
+        required=True,
+        help="Comma-separated list of subnets (e.g. 10.0.0.0/8,172.16.0.0/12)",
+    )
+    service_create_action.add_argument(
+        "--tags",
+        default="",
+        help="Comma-separated tags (e.g. finance,engineering)",
+    )
+    service_create_action.add_argument(
+        "--description", default="", help="Service description"
+    )
+    service_create_action.add_argument(
+        "--kinds",
+        default="",
+        help=(
+            "Comma-separated list of firewall kinds. "
+            "Format: kind:type[,port-min-port] "
+            "(e.g. 'any,tcp:80-443,udp:53' or empty for any)"
+        ),
+    )
+
+    subparsers.add_parser("service-list")
+
+    service_delete_action = subparsers.add_parser("service-delete")
+    service_delete_action.add_argument("uuid")
+
+    # Account network access commands
+    account_network_access_action = subparsers.add_parser("account-set-network-access")
+    account_network_access_action.add_argument("account", help="Account UUID or name")
+    account_network_access_action.add_argument(
+        "--access-type",
+        choices=["ALL", "RESTRICTED"],
+        default="RESTRICTED",
+        help="Network access type (ALL or RESTRICTED)",
+    )
+    account_network_access_action.add_argument(
+        "--tags",
+        default="",
+        help="Comma-separated tags for RESTRICTED access",
+    )
 
 
 CONF.register_cli_opt(cfg.SubCommandOpt("action", handler=add_parsers))
@@ -282,7 +360,7 @@ def account_create(session, conf):
     CONSOLE.print("Scan the QR code with your authenticator app.")
 
     # Generate config file and send everything to PrivateBin
-    conf.uuid = account.uuid
+    conf.account = str(account.uuid)
     config_file = account_generate_config(session, conf)
 
     credentials_text = _build_credentials_text(account.account_name, pin, otp_uri)
@@ -313,9 +391,7 @@ def account_list(session, conf):
 
 
 def account_disable(session, conf):
-    filters = {}
-    filters["uuid"] = dm_filters.EQ(conf.uuid)
-    account = models.Account.objects.get_one(session=session, filters=filters)
+    account = _resolve_account(session, conf.account)
     account.disable(session=session)
 
     CONSOLE.print(f"Account {account.uuid} ({account.account_name}) disabled")
@@ -323,9 +399,7 @@ def account_disable(session, conf):
 
 def account_generate_config(session, conf):
     """Generate .ovpn config file. Returns the config file path."""
-    filters = {}
-    filters["uuid"] = dm_filters.EQ(conf.uuid)
-    account = models.Account.objects.get_one(session=session, filters=filters)
+    account = _resolve_account(session, conf.account)
 
     if not os.path.exists(CONF[c.COMMON_DOMAIN].openvpn_client_configs_dir):
         os.makedirs(CONF[c.COMMON_DOMAIN].openvpn_client_configs_dir)
@@ -350,12 +424,12 @@ def account_generate_config(session, conf):
             f.write(ovpn_config.generate_ovpn_config(account))
 
     CONSOLE.print(f"Configuration file generated at {config_file}")
+    pbin_send(conf, text="Download your config from attachment", config_file=config_file)
     return config_file
 
 
 def otp_add(session, conf):
-    filters = {"uuid": dm_filters.EQ(conf.account_uuid)}
-    account = models.Account.objects.get_one(session=session, filters=filters)
+    account = _resolve_account(session, conf.account)
 
     secret = pyotp.random_base32()
     device = models.OtpDevice(
@@ -380,7 +454,8 @@ def otp_add(session, conf):
 
 
 def otp_list(session, conf):
-    filters = {"account": dm_filters.EQ(conf.account_uuid)}
+    account = _resolve_account(session, conf.account)
+    filters = {"account": dm_filters.EQ(str(account.uuid))}
     rels = models.AccountOtpDevice.objects.get_all(session=session, filters=filters)
     table = Table(show_header=True, header_style="bold magenta")
     table.add_column("uuid", style="dim", width=36)
@@ -407,15 +482,118 @@ def otp_remove(session, conf):
     CONSOLE.print(f"OTP device {device.uuid} ({device.name}) disabled")
 
 
+def _parse_kinds(kinds_str):
+    """Parse kinds string into a list of FirewallKind instances."""
+    if not kinds_str or not kinds_str.strip():
+        return []
+    kinds = []
+    for kind_str in kinds_str.split(","):
+        kind_str = kind_str.strip()
+        if not kind_str:
+            continue
+        kinds.append(firewall_kinds.from_str(kind_str))
+    return kinds
+
+
+def service_create(session, conf):
+    """Create a new service with subnets and tags."""
+    subnets = [
+        netaddr.IPNetwork(s.strip()) for s in conf.subnets.split(",") if s.strip()
+    ]
+    tags = [t.strip() for t in conf.tags.split(",") if t.strip()]
+    kinds = _parse_kinds(conf.kinds)
+
+    kwargs = {}
+    if kinds:
+        kwargs["kinds"] = kinds
+
+    service = models.Service(
+        name=conf.name,
+        subnets=subnets,
+        tags=tags,
+        description=conf.description,
+        **kwargs,
+    )
+    service.save(session=session)
+
+    CONSOLE.print(f"Service created with uuid: {service.uuid}")
+    CONSOLE.print(f"Name: {service.name}")
+    CONSOLE.print(f"Subnets: {conf.subnets}")
+    if service.tags:
+        CONSOLE.print(f"Tags: {', '.join(service.tags)}")
+    if service.description:
+        CONSOLE.print(f"Description: {service.description}")
+    if kinds:
+        kinds_display = ", ".join(k.to_str() for k in service.kinds)
+        CONSOLE.print(f"Kinds: {kinds_display}")
+
+
+def service_list(session, conf):
+    """List all services."""
+    services = models.Service.objects.get_all(session=session)
+    table = Table(show_header=True, header_style="bold magenta")
+    table.add_column("uuid", style="dim", width=36)
+    table.add_column("name")
+    table.add_column("subnets")
+    table.add_column("tags")
+    table.add_column("description")
+    table.add_column("kinds")
+    for service in services:
+        kinds_str = (
+            ", ".join(k.to_str() for k in service.kinds) if service.kinds else "-"
+        )
+        table.add_row(
+            str(service.uuid),
+            service.name,
+            ", ".join(str(i) for i in service.subnets),
+            ", ".join(service.tags) if service.tags else "-",
+            service.description or "-",
+            kinds_str,
+        )
+
+    CONSOLE.print(table)
+
+
+def service_delete(session, conf):
+    """Delete a service."""
+    filters = {"uuid": dm_filters.EQ(conf.uuid)}
+    service = models.Service.objects.get_one(session=session, filters=filters)
+    service.delete(session=session)
+
+    CONSOLE.print(f"Service {service.name} ({service.uuid}) deleted")
+
+
+def account_set_network_access(session, conf):
+    """Set network access type and tags for an account."""
+    account = _resolve_account(session, conf.account)
+
+    tags = [t.strip() for t in conf.tags.split(",") if t.strip()] if conf.tags else []
+
+    account.network_access_type = conf.access_type
+    account.network_access_tags = tags
+    account.save(session=session)
+
+    CONSOLE.print(
+        f"Account {account.account_name} ({account.uuid}) "
+        f"network access set to {conf.access_type}"
+    )
+    if tags:
+        CONSOLE.print(f"Tags: {', '.join(tags)}")
+
+
 FUNC_MAPPING = {
     "account-create": account_create,
     "account-list": account_list,
     "account-disable": account_disable,
     "account-generate-config": account_generate_config,
+    "account-set-network-access": account_set_network_access,
     "cert-list": cert_list,
     "otp-add": otp_add,
     "otp-list": otp_list,
     "otp-remove": otp_remove,
+    "service-create": service_create,
+    "service-list": service_list,
+    "service-delete": service_delete,
 }
 
 

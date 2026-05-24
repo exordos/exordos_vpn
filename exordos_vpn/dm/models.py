@@ -28,12 +28,14 @@ from restalchemy.dm import models
 from restalchemy.dm import properties
 from restalchemy.dm import relationships
 from restalchemy.dm import types
+from restalchemy.dm import types_network
 from restalchemy.storage.sql import orm
 
 from exordos_vpn.common import cert
 from exordos_vpn.common import config
 from exordos_vpn.common import constants as c
 from exordos_vpn.common import crypto
+from exordos_vpn.common import firewall_kinds
 
 
 CONF = cfg.CONF
@@ -47,12 +49,12 @@ class CommonModel(
     pass
 
 
-class InvalidPinError(ra_exceptions.RestAlchemyException):
-    message = "PIN must be at least 10 characters long"
-    code = 400
-
-
 MIN_PIN_LENGTH = 6
+
+
+class InvalidPinError(ra_exceptions.RestAlchemyException):
+    message = f"PIN must be at least {MIN_PIN_LENGTH} characters long"
+    code = 400
 
 
 def _generate_salt(length=18):
@@ -92,6 +94,14 @@ class Account(CommonModel):
     )
     pin_salt = properties.property(types.String(), required=False)
     pin_hash = properties.property(types.String(), required=True)
+    network_access_type = properties.property(
+        types.Enum(("ALL", "RESTRICTED")),
+        default="RESTRICTED",
+    )
+    network_access_tags = properties.property(
+        types.TypedList(types.String()),
+        default=[],
+    )
 
     @classmethod
     def allocate_address_offset(cls, session=None):
@@ -153,6 +163,23 @@ limit 1;""",
     def disable(self, session=None):
         self.status = "DISABLED"
         self.save(session=session)
+
+
+class Service(CommonModel, models.ModelWithNameDesc):
+    __tablename__ = "services"
+
+    subnets = properties.property(
+        types.TypedList(types_network.IpWithMask()),
+        required=True,
+    )
+    tags = properties.property(
+        types.TypedList(types.String()),
+        default=[],
+    )
+    kinds = properties.property(
+        types.TypedList(firewall_kinds.FirewallKindSelectorType),
+        default=lambda: [firewall_kinds.FirewallKindAny()],
+    )
 
 
 class OtpDevice(CommonModel):

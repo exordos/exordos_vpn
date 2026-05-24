@@ -45,6 +45,22 @@ agent_config_opts = [
         help="Openvpn subnet cidr, in 0.0.0.0/0 format",
         required=True,
     ),
+    cfg.BoolOpt(
+        "firewall_enabled",
+        default=True,
+        help="Enable iptables-based network access control",
+    ),
+    cfg.StrOpt(
+        "firewall_chain_prefix",
+        default="exordos_vpn",
+        help="Prefix for iptables chain names",
+    ),
+    cfg.StrOpt(
+        "firewall_global_whitelist",
+        default="",
+        help="Comma-separated list of CIDR blocks globally allowed "
+        "for all VPN clients (e.g. 8.8.8.8/32,1.1.1.1/32,10.0.0.0/8)",
+    ),
 ]
 
 
@@ -76,7 +92,7 @@ def main():
         return 1
 
     service = server_agent.AgentService(
-        iter_min_period=3,
+        iter_min_period=4,
         prefixes=prefixes,
     )
 

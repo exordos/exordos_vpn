@@ -17,7 +17,7 @@ build:
         format: raw
 
         # OS profile for the image
-        profile: ubuntu_24
+        profile: exordos_base
 
         # Provisioning script
         script: images/install.sh

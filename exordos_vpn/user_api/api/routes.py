@@ -46,14 +46,27 @@ class AddressesPerUserRoute(routes.Route):
 
 
 class AuthRoute(routes.Route):
-    """Handler for /auth/ endpoint — no IAM auth required"""
+    """Handler for /auth/ endpoint - no IAM auth required"""
 
     __controller__ = controllers.AuthController
     __allow_methods__ = [routes.CREATE]
 
 
+class ServiceRoute(routes.Route):
+    """Handler for /services/ endpoint."""
+
+    __controller__ = controllers.ServiceController
+    __allow_methods__ = [
+        routes.FILTER,
+        routes.CREATE,
+        routes.GET,
+        routes.DELETE,
+        routes.UPDATE,
+    ]
+
+
 class ApiEndpointRoute(routes.Route):
-    """Handler for /v1/ endpoint"""
+    """Handler for /v1/ endpoint."""
 
     __controller__ = controllers.ApiEndpointController
     __allow_methods__ = [routes.FILTER]
@@ -63,3 +76,4 @@ class ApiEndpointRoute(routes.Route):
     otp_devices = routes.route(OtpDeviceRoute)
     addresses_per_user = routes.route(AddressesPerUserRoute)
     auth = routes.route(AuthRoute)
+    services = routes.route(ServiceRoute)
