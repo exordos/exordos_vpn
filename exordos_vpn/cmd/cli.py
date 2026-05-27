@@ -531,8 +531,7 @@ def account_add_network_tag(ctx, account, tags):
         acc.save(session=session)
 
         CONSOLE.print(
-            f"Account {acc.account_name} ({acc.uuid}) "
-            f"tags added: {', '.join(added)}"
+            f"Account {acc.account_name} ({acc.uuid}) tags added: {', '.join(added)}"
         )
         CONSOLE.print(f"Current tags: {', '.join(acc.network_access_tags)}")
 
@@ -609,7 +608,12 @@ def otp_list(ctx, account):
         rels = models.AccountOtpDevice.objects.get_all(session=session, filters=filters)
         columns = ["uuid", "name", "otp_type", "status"]
         rows = [
-            (str(r.otp_device.uuid), r.otp_device.name, r.otp_device.otp_type, r.otp_device.status)
+            (
+                str(r.otp_device.uuid),
+                r.otp_device.name,
+                r.otp_device.otp_type,
+                r.otp_device.status,
+            )
             for r in rels
         ]
         _print_output(ctx, columns, rows)

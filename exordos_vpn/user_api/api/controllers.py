@@ -97,7 +97,7 @@ class AddressesPerUserController(iam_controllers.PolicyBasedWithoutProjectContro
     """Controller for /addresses_per_user/ endpoint"""
 
     __policy_service_name__ = "vpn"
-    __policy_name__ = "certificates"
+    __policy_name__ = "accounts"
 
     def filter(self, filters, order_by=None):
         self._enforce("read")

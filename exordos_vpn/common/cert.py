@@ -14,7 +14,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from OpenSSL import crypto, SSL
+from OpenSSL import crypto
 
 OBJTYPE_TO_LOAD_FUNC = {
     crypto.X509: crypto.load_certificate,
