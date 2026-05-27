@@ -38,27 +38,53 @@ tox -e begin,py312,end
 
 ## CLI Commands
 
+The CLI uses `click` for command-line parsing and `oslo.config` for configuration file parsing.
+
+Global options:
+
+```bash
+--config-file TEXT     Path to the configuration file
+--config-dir TEXT      Directory for config and template files [default: /etc/exordos_vpn]
+--format [table|json] Output format [default: table]
+```
+
 ### Account Management
 
 ```bash
 # Create new account with auto-generated PIN and OTP
-$ exordos-vpn-cli account-create user1 --account-name mobile
+$ exordos-vpn-cli account-create user1 --name mobile
 
 # List accounts (filter by user_id)
 $ exordos-vpn-cli account-list --user-id user1
+
+# List accounts in JSON format
+$ exordos-vpn-cli --format json account-list
 
 # Disable account
 $ exordos-vpn-cli account-disable <account-uuid-or-name>
 
 # Generate OpenVPN config for account
 $ exordos-vpn-cli account-generate-config <account-uuid-or-name> --otp-uuid <otp-uuid>
+
+# Reset PIN and OTP (with confirmation prompt)
+$ exordos-vpn-cli account-reset <account-uuid-or-name>
 ```
 
-### Certificate Management
+### Network Access Control
 
 ```bash
-# List certificates (filter by user_id)
-$ exordos-vpn-cli cert-list --user-id user1
+# Show current network access rules
+$ exordos-vpn-cli account-network-show <account-uuid-or-name>
+
+# Reset network access type and tags (full overwrite)
+$ exordos-vpn-cli account-network-reset <account-uuid-or-name> \
+    --access-type RESTRICTED --tags "finance,engineering"
+
+# Add tags to existing access rules
+$ exordos-vpn-cli account-network-add-tag <account-uuid-or-name> finance,engineering
+
+# Remove tags from access rules
+$ exordos-vpn-cli account-network-remove-tag <account-uuid-or-name> finance
 ```
 
 ### OTP (Two-Factor Authentication)
@@ -86,20 +112,11 @@ $ exordos-vpn-cli service-create myservice \
 # List services
 $ exordos-vpn-cli service-list
 
+# List services in JSON format
+$ exordos-vpn-cli --format json service-list
+
 # Delete service
 $ exordos-vpn-cli service-delete <service-uuid>
-```
-
-### Network Access Control
-
-```bash
-# Set account network access type
-$ exordos-vpn-cli account-set-network-access <account-uuid-or-name> \
-    --access-type RESTRICTED --tags "finance,engineering"
-
-# Grant full access
-$ exordos-vpn-cli account-set-network-access <account-uuid-or-name> \
-    --access-type ALL
 ```
 
 ## Services
