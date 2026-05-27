@@ -153,6 +153,15 @@ def register_service_config_opts():
     cfg.CONF.register_cli_opts(service_config_opts, constants.COMMON_DOMAIN)
 
 
+def register_service_config_opts_file_only():
+    """Register service config opts for config-file only (no CLI opts).
+
+    Use this when CLI arguments are handled by a different framework
+    (e.g. click) and oslo_config should only parse the config file.
+    """
+    cfg.CONF.register_opts(service_config_opts, constants.COMMON_DOMAIN)
+
+
 @cache
 def get_minimal_subnet_size():
     return max(

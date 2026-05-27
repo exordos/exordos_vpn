@@ -15,13 +15,12 @@
 #    under the License.
 
 import io
-import logging
 import os
 import secrets
 import string
-import sys
 import uuid
 
+import click
 import jinja2
 
 import netaddr
@@ -47,7 +46,10 @@ from exordos_vpn.dm import models
 CONSOLE = Console()
 CONF = cfg.CONF
 ra_config_opts.register_posgresql_db_opts(CONF)
-config.register_service_config_opts()
+config.register_service_config_opts_file_only()
+
+# Set by _init_config from click's --config-dir
+_CONFIG_DIR = None
 
 
 def _resolve_account(session, identifier):
@@ -98,9 +100,8 @@ def _build_credentials_text(account_name, pin, otp_uri):
     qr.print_ascii(out=buf)
     qr_text = buf.getvalue()
 
-    template_file = CONF.find_file(
-        CONF[c.COMMON_DOMAIN].credentials_template
-    )
+    template_name = CONF[c.COMMON_DOMAIN].credentials_template
+    template_file = os.path.join(_CONFIG_DIR, template_name)
     with open(template_file, "r") as f:
         template = jinja2.Template(f.read())
     return template.render(
@@ -145,9 +146,7 @@ def _resolve_otp_device(session, account, otp_uuid=None):
     elif len(rels) == 1:
         return rels[0].otp_device, False
     else:
-        CONSOLE.print(
-            f"Account has {len(rels)} OTP devices. Please specify --otp-uuid."
-        )
+        CONSOLE.print("Account has multiple OTP devices. Please specify --otp-uuid.")
         table = Table(show_header=True, header_style="bold magenta")
         table.add_column("uuid", style="dim", width=36)
         table.add_column("name")
@@ -169,134 +168,19 @@ def _print_otp_qrcode(uri):
     qr.print_ascii()
 
 
-def add_parsers(subparsers):
-    # Account management commands
-    account_create_action = subparsers.add_parser("account-create")
-    account_create_action.add_argument("user_id", type=str.lower)
-    account_create_action.add_argument(
-        "--account-name",
-        type=str.lower,
-        default=None,
-        help="Account name (auto-generated if not provided)",
-    )
-    account_create_action.add_argument(
-        "--pin-length", type=int, default=6, help="PIN length (min 6, auto-generated)"
-    )
-    account_create_action.add_argument("--disable-pbin", action="store_true")
-
-    account_list_action = subparsers.add_parser("account-list")
-    account_list_action.add_argument("--user-id", required=False)
-
-    account_disable_action = subparsers.add_parser("account-disable")
-    account_disable_action.add_argument("account", help="Account UUID or name")
-
-    account_gen_config_action = subparsers.add_parser("account-generate-config")
-    account_gen_config_action.add_argument("account", help="Account UUID or name")
-    account_gen_config_action.add_argument(
-        "--otp-uuid",
-        default=None,
-        help="OTP device uuid (required if account has multiple OTP devices)",
-    )
-    account_gen_config_action.add_argument("--disable-pbin", action="store_true")
-
-    # Certificate management commands
-    cert_list_action = subparsers.add_parser("cert-list")
-    cert_list_action.add_argument("--user-id", required=False)
-
-    # OTP device management commands
-    otp_add_action = subparsers.add_parser("otp-add")
-    otp_add_action.add_argument("account", help="Account UUID or name")
-    otp_add_action.add_argument("--name", default="Default", help="Device name")
-
-    otp_list_action = subparsers.add_parser("otp-list")
-    otp_list_action.add_argument("account", help="Account UUID or name")
-
-    otp_remove_action = subparsers.add_parser("otp-remove")
-    otp_remove_action.add_argument("uuid")
-
-    # Service management commands
-    service_create_action = subparsers.add_parser("service-create")
-    service_create_action.add_argument("name", type=str.lower)
-    service_create_action.add_argument(
-        "--subnets",
-        required=True,
-        help="Comma-separated list of subnets (e.g. 10.0.0.0/8,172.16.0.0/12)",
-    )
-    service_create_action.add_argument(
-        "--tags",
-        default="",
-        help="Comma-separated tags (e.g. finance,engineering)",
-    )
-    service_create_action.add_argument(
-        "--description", default="", help="Service description"
-    )
-    service_create_action.add_argument(
-        "--kinds",
-        default="",
-        help=(
-            "Comma-separated list of firewall kinds. "
-            "Format: kind:type[,port-min-port] "
-            "(e.g. 'any,tcp:80-443,udp:53' or empty for any)"
-        ),
-    )
-
-    subparsers.add_parser("service-list")
-
-    service_delete_action = subparsers.add_parser("service-delete")
-    service_delete_action.add_argument("uuid")
-
-    # Account network access commands
-    account_network_access_action = subparsers.add_parser("account-set-network-access")
-    account_network_access_action.add_argument("account", help="Account UUID or name")
-    account_network_access_action.add_argument(
-        "--access-type",
-        choices=["ALL", "RESTRICTED"],
-        default="RESTRICTED",
-        help="Network access type (ALL or RESTRICTED)",
-    )
-    account_network_access_action.add_argument(
-        "--tags",
-        default="",
-        help="Comma-separated tags for RESTRICTED access",
-    )
-
-
-CONF.register_cli_opt(cfg.SubCommandOpt("action", handler=add_parsers))
-
-
-def cert_list(session, conf):
-    filters = {}
-    if conf.user_id:
-        filters["user_id"] = dm_filters.EQ(conf.user_id)
-    certs = models.Certificate.objects.get_all(session=session, filters=filters)
-    table = Table(show_header=True, header_style="bold magenta")
-    table.add_column("uuid", style="dim", width=36)
-    table.add_column("account_name")
-    table.add_column("user_id")
-    table.add_column("serial")
-    for cert in certs:
-        table.add_row(
-            str(cert.uuid),
-            cert.common_name or "-",
-            cert.user_id,
-            str(cert.serial),
-        )
-
-    CONSOLE.print(table)
-
-
-def pbin_send(conf, text, config_file=None):
+def _pbin_send(disable_pbin, text, config_file=None):
+    """Send text and optionally a config file to PrivateBin."""
     try:
-        if not conf.disable_pbin and CONF[c.COMMON_DOMAIN].get("privatebin_endpoint"):
-            kwargs = {
-                "text": text,
-            }
+        if not disable_pbin and CONF[c.COMMON_DOMAIN].get("privatebin_endpoint"):
+            endpoint = CONF[c.COMMON_DOMAIN].privatebin_endpoint
             if config_file:
-                kwargs["file"] = config_file
-            dl_link = privatebin.send_file(
-                CONF[c.COMMON_DOMAIN].privatebin_endpoint,
-                **kwargs,
-            )
+                dl_link = privatebin.send_file(
+                    endpoint,
+                    text=text,
+                    file=config_file,
+                )
+            else:
+                dl_link = privatebin.send_text(endpoint, text=text)
             CONSOLE.print(
                 f"One-time download link, lasts 1 week: {dl_link['full_url']}"
             )
@@ -304,102 +188,201 @@ def pbin_send(conf, text, config_file=None):
         print(f"Upload to pbin failed, feel free to retry, error: {e}")
 
 
-def account_create(session, conf):
-    pin = _generate_pin(length=conf.pin_length)
-    generate_certs = CONF[c.COMMON_DOMAIN].generate_certs
-    auth_type = "cert_and_password" if generate_certs else "password_only"
+def _parse_kinds(kinds_str):
+    """Parse kinds string into a list of FirewallKind instances."""
+    if not kinds_str or not kinds_str.strip():
+        return []
+    kinds = []
+    for kind_str in kinds_str.split(","):
+        kind_str = kind_str.strip()
+        if not kind_str:
+            continue
+        kinds.append(firewall_kinds.from_str(kind_str))
+    return kinds
 
-    kwargs = {}
-    kwargs["user_id"] = conf.user_id
-    kwargs["pin"] = pin
-    kwargs["pin_length"] = conf.pin_length
-    kwargs["auth_type"] = auth_type
-    kwargs["account_name"] = conf.account_name or conf.user_id
 
-    if not kwargs["account_name"].startswith(conf.user_id):
-        kwargs["account_name"] = f"{conf.user_id}_{kwargs['account_name']}"
+def _init_config(config_file, config_dir):
+    """Parse oslo config from the given config file/dir path."""
+    global _CONFIG_DIR
+    _CONFIG_DIR = config_dir
+    args = []
+    if config_file:
+        args.append("--config-file")
+        args.append(config_file)
+    if config_dir:
+        args.append("--config-dir")
+        args.append(config_dir)
+    config.parse(args)
+    infra_log.configure()
+    engines.engine_factory.configure_postgresql_factory(CONF)
 
-    account = models.Account(**kwargs)
-    account.save(session=session)
 
-    # Create a certificate if configured
-    cert = None
-    if generate_certs:
-        cert = models.Certificate(
-            user_id=conf.user_id,
-            account=account,
+def _ensure_config(ctx):
+    """Lazily initialize oslo config and DB session on first command use."""
+    if not ctx.obj.get("_config_initialized"):
+        _init_config(ctx.obj["config_file"], ctx.obj["config_dir"])
+        ctx.obj["session_ctx"] = contexts.Context()
+        ctx.obj["_config_initialized"] = True
+
+
+@click.group()
+@click.option(
+    "--config-file",
+    envvar="EXORDOS_VPN_CONFIG",
+    help="Path to the configuration file.",
+)
+@click.option(
+    "--config-dir",
+    envvar="EXORDOS_VPN_CONFIG_DIR",
+    default=f"/etc/{c.GLOBAL_SERVICE_NAME}",
+    show_default=True,
+    help="Directory for config and template files.",
+)
+@click.pass_context
+def cli(ctx, config_file, config_dir):
+    """Exordos VPN CLI management tool."""
+    ctx.ensure_object(dict)
+    ctx.obj["config_file"] = config_file
+    ctx.obj["config_dir"] = config_dir
+    ctx.obj["_config_initialized"] = False
+
+
+# --- Account commands ---
+
+
+@cli.command("account-create")
+@click.argument("user_id", type=str.lower)
+@click.option(
+    "--name",
+    type=str.lower,
+    default=None,
+    help="Account name (auto-generated if not provided)",
+)
+@click.option(
+    "--pin-length", type=int, default=6, help="PIN length (min 6, auto-generated)"
+)
+@click.option("--disable-pbin", is_flag=True, default=False)
+@click.pass_context
+def account_create(ctx, user_id, name, pin_length, disable_pbin):
+    """Create a new account."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        pin = _generate_pin(length=pin_length)
+        generate_certs = CONF[c.COMMON_DOMAIN].generate_certs
+        auth_type = "cert_and_password" if generate_certs else "password_only"
+
+        kwargs = {}
+        kwargs["user_id"] = user_id
+        kwargs["pin"] = pin
+        kwargs["pin_length"] = pin_length
+        kwargs["auth_type"] = auth_type
+        kwargs["account_name"] = name or user_id
+
+        if not kwargs["account_name"].startswith(user_id):
+            kwargs["account_name"] = f"{user_id}_{kwargs['account_name']}"
+
+        account = models.Account(**kwargs)
+        account.save(session=session)
+
+        # Create a certificate if configured
+        cert = None
+        if generate_certs:
+            cert = models.Certificate(
+                user_id=user_id,
+                account=account,
+            )
+            cert.save(session=session)
+
+        # Resolve OTP device (new account — will create one)
+        device, otp_created = _resolve_otp_device(session, account)
+        otp_secret = device.get_decrypted_secret()
+
+        # Generate OTP provisioning URI and QR code
+        otp_uri = pyotp.TOTP(otp_secret).provisioning_uri(
+            name=account.account_name,
+            issuer_name=CONF[c.COMMON_DOMAIN].otp_issuer_name,
         )
-        cert.save(session=session)
 
-    # Resolve OTP device (new account — will create one)
-    device, otp_created = _resolve_otp_device(session, account)
-    otp_secret = device.get_decrypted_secret()
+        CONSOLE.print(f"Account created with uuid: {account.uuid}")
+        CONSOLE.print(f"Account name: {account.account_name}")
+        CONSOLE.print(f"Auth type: {account.auth_type}")
+        if cert:
+            CONSOLE.print(f"Certificate uuid: {cert.uuid}")
+        if otp_created:
+            CONSOLE.print(f"OTP device created: {device.uuid}")
+        else:
+            CONSOLE.print(f"OTP device: {device.uuid} (existing)")
+        CONSOLE.print()
+        CONSOLE.print("[bold]Login:[/bold] " + account.account_name)
+        CONSOLE.print("[bold]PIN:[/bold] " + pin, style="bold yellow")
+        CONSOLE.print("[bold]OTP Secret (base32):[/bold] " + otp_secret)
+        CONSOLE.print("[bold]OTP QR Code:[/bold]")
+        _print_otp_qrcode(otp_uri)
+        CONSOLE.print()
+        CONSOLE.print("Scan the QR code with your authenticator app.")
 
-    # Generate OTP provisioning URI and QR code
-    otp_uri = pyotp.TOTP(otp_secret).provisioning_uri(
-        name=account.account_name,
-        issuer_name=CONF[c.COMMON_DOMAIN].otp_issuer_name,
-    )
-
-    CONSOLE.print(f"Account created with uuid: {account.uuid}")
-    CONSOLE.print(f"Account name: {account.account_name}")
-    CONSOLE.print(f"Auth type: {account.auth_type}")
-    if cert:
-        CONSOLE.print(f"Certificate uuid: {cert.uuid}")
-    if otp_created:
-        CONSOLE.print(f"OTP device created: {device.uuid}")
-    else:
-        CONSOLE.print(f"OTP device: {device.uuid} (existing)")
-    CONSOLE.print()
-    CONSOLE.print("[bold]Login:[/bold] " + account.account_name)
-    CONSOLE.print("[bold]PIN:[/bold] " + pin, style="bold yellow")
-    CONSOLE.print("[bold]OTP Secret (base32):[/bold] " + otp_secret)
-    CONSOLE.print("[bold]OTP QR Code:[/bold]")
-    _print_otp_qrcode(otp_uri)
-    CONSOLE.print()
-    CONSOLE.print("Scan the QR code with your authenticator app.")
-
-    # Generate config file and send everything to PrivateBin
-    conf.account = str(account.uuid)
-    config_file = account_generate_config(session, conf)
-
-    credentials_text = _build_credentials_text(account.account_name, pin, otp_uri)
-    pbin_send(conf, text=credentials_text, config_file=config_file)
-
-
-def account_list(session, conf):
-    filters = {}
-    if conf.user_id:
-        filters["user_id"] = dm_filters.EQ(conf.user_id)
-    accounts = models.Account.objects.get_all(session=session, filters=filters)
-    table = Table(show_header=True, header_style="bold magenta")
-    table.add_column("uuid", style="dim", width=36)
-    table.add_column("user_id")
-    table.add_column("account_name")
-    table.add_column("auth_type")
-    table.add_column("status", justify="right")
-    for account in accounts:
-        table.add_row(
+        # Generate config file and send everything to PrivateBin
+        config_file = _account_generate_config(
+            session,
             str(account.uuid),
-            account.user_id,
-            account.account_name,
-            account.auth_type,
-            account.status,
+            disable_pbin,
+            send_to_pbin=False,
         )
 
-    CONSOLE.print(table)
+        credentials_text = _build_credentials_text(account.account_name, pin, otp_uri)
+        _pbin_send(disable_pbin, text=credentials_text, config_file=config_file)
 
 
-def account_disable(session, conf):
-    account = _resolve_account(session, conf.account)
-    account.disable(session=session)
+@cli.command("account-list")
+@click.option("--user-id", default=None, help="Filter by user ID")
+@click.pass_context
+def account_list(ctx, user_id):
+    """List accounts."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        filters = {}
+        if user_id:
+            filters["user_id"] = dm_filters.EQ(user_id)
+        accounts = models.Account.objects.get_all(session=session, filters=filters)
+        table = Table(show_header=True, header_style="bold magenta")
+        table.add_column("uuid", style="dim", width=36)
+        table.add_column("user_id")
+        table.add_column("account_name")
+        table.add_column("auth_type")
+        table.add_column("status", justify="right")
+        for account in accounts:
+            table.add_row(
+                str(account.uuid),
+                account.user_id,
+                account.account_name,
+                account.auth_type,
+                account.status,
+            )
 
-    CONSOLE.print(f"Account {account.uuid} ({account.account_name}) disabled")
+        CONSOLE.print(table)
 
 
-def account_generate_config(session, conf):
+@cli.command("account-disable")
+@click.argument("account")
+@click.pass_context
+def account_disable(ctx, account):
+    """Disable an account."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        acc = _resolve_account(session, account)
+        acc.disable(session=session)
+
+        CONSOLE.print(f"Account {acc.uuid} ({acc.account_name}) disabled")
+
+
+def _account_generate_config(
+    session, account_identifier, disable_pbin=False, send_to_pbin=True
+):
     """Generate .ovpn config file. Returns the config file path."""
-    account = _resolve_account(session, conf.account)
+    account = _resolve_account(session, account_identifier)
 
     if not os.path.exists(CONF[c.COMMON_DOMAIN].openvpn_client_configs_dir):
         os.makedirs(CONF[c.COMMON_DOMAIN].openvpn_client_configs_dir)
@@ -424,191 +407,333 @@ def account_generate_config(session, conf):
             f.write(ovpn_config.generate_ovpn_config(account))
 
     CONSOLE.print(f"Configuration file generated at {config_file}")
-    pbin_send(conf, text="Download your config from attachment", config_file=config_file)
+    if send_to_pbin:
+        _pbin_send(
+            disable_pbin,
+            text="Download your config from attachment",
+            config_file=config_file,
+        )
     return config_file
 
 
-def otp_add(session, conf):
-    account = _resolve_account(session, conf.account)
-
-    secret = pyotp.random_base32()
-    device = models.OtpDevice(
-        otp_secret=secret,
-        name=conf.name,
-        user_id=account.user_id,
-    )
-    device.save(session=session)
-    rel = models.AccountOtpDevice(account=account, otp_device=device)
-    rel.save(session=session)
-
-    uri = pyotp.TOTP(secret).provisioning_uri(
-        name=account.account_name,
-        issuer_name=CONF[c.COMMON_DOMAIN].otp_issuer_name,
-    )
-    CONSOLE.print(f"OTP device added: {device.uuid}")
-    CONSOLE.print(f"Device name: {device.name}")
-    CONSOLE.print(f"Secret (base32): {secret}")
-    CONSOLE.print("[bold]OTP QR Code:[/bold]")
-    _print_otp_qrcode(uri)
-    CONSOLE.print("Scan the QR code with your authenticator app.")
+@cli.command("account-generate-config")
+@click.argument("account")
+@click.option(
+    "--otp-uuid",
+    default=None,
+    help="OTP device uuid (required if account has multiple OTP devices)",
+)
+@click.option("--disable-pbin", is_flag=True, default=False)
+@click.pass_context
+def account_generate_config_cmd(ctx, account, otp_uuid, disable_pbin):
+    """Generate .ovpn config file for an account."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        _account_generate_config(session, account, disable_pbin)
 
 
-def otp_list(session, conf):
-    account = _resolve_account(session, conf.account)
-    filters = {"account": dm_filters.EQ(str(account.uuid))}
-    rels = models.AccountOtpDevice.objects.get_all(session=session, filters=filters)
-    table = Table(show_header=True, header_style="bold magenta")
-    table.add_column("uuid", style="dim", width=36)
-    table.add_column("name")
-    table.add_column("otp_type")
-    table.add_column("status", justify="right")
-    for rel in rels:
-        device = rel.otp_device
-        table.add_row(
-            str(device.uuid),
-            device.name,
-            device.otp_type,
-            device.status,
-        )
-
-    CONSOLE.print(table)
-
-
-def otp_remove(session, conf):
-    filters = {"uuid": dm_filters.EQ(conf.uuid)}
-    device = models.OtpDevice.objects.get_one(session=session, filters=filters)
-    device.disable(session=session)
-
-    CONSOLE.print(f"OTP device {device.uuid} ({device.name}) disabled")
-
-
-def _parse_kinds(kinds_str):
-    """Parse kinds string into a list of FirewallKind instances."""
-    if not kinds_str or not kinds_str.strip():
-        return []
-    kinds = []
-    for kind_str in kinds_str.split(","):
-        kind_str = kind_str.strip()
-        if not kind_str:
-            continue
-        kinds.append(firewall_kinds.from_str(kind_str))
-    return kinds
-
-
-def service_create(session, conf):
-    """Create a new service with subnets and tags."""
-    subnets = [
-        netaddr.IPNetwork(s.strip()) for s in conf.subnets.split(",") if s.strip()
-    ]
-    tags = [t.strip() for t in conf.tags.split(",") if t.strip()]
-    kinds = _parse_kinds(conf.kinds)
-
-    kwargs = {}
-    if kinds:
-        kwargs["kinds"] = kinds
-
-    service = models.Service(
-        name=conf.name,
-        subnets=subnets,
-        tags=tags,
-        description=conf.description,
-        **kwargs,
-    )
-    service.save(session=session)
-
-    CONSOLE.print(f"Service created with uuid: {service.uuid}")
-    CONSOLE.print(f"Name: {service.name}")
-    CONSOLE.print(f"Subnets: {conf.subnets}")
-    if service.tags:
-        CONSOLE.print(f"Tags: {', '.join(service.tags)}")
-    if service.description:
-        CONSOLE.print(f"Description: {service.description}")
-    if kinds:
-        kinds_display = ", ".join(k.to_str() for k in service.kinds)
-        CONSOLE.print(f"Kinds: {kinds_display}")
-
-
-def service_list(session, conf):
-    """List all services."""
-    services = models.Service.objects.get_all(session=session)
-    table = Table(show_header=True, header_style="bold magenta")
-    table.add_column("uuid", style="dim", width=36)
-    table.add_column("name")
-    table.add_column("subnets")
-    table.add_column("tags")
-    table.add_column("description")
-    table.add_column("kinds")
-    for service in services:
-        kinds_str = (
-            ", ".join(k.to_str() for k in service.kinds) if service.kinds else "-"
-        )
-        table.add_row(
-            str(service.uuid),
-            service.name,
-            ", ".join(str(i) for i in service.subnets),
-            ", ".join(service.tags) if service.tags else "-",
-            service.description or "-",
-            kinds_str,
-        )
-
-    CONSOLE.print(table)
-
-
-def service_delete(session, conf):
-    """Delete a service."""
-    filters = {"uuid": dm_filters.EQ(conf.uuid)}
-    service = models.Service.objects.get_one(session=session, filters=filters)
-    service.delete(session=session)
-
-    CONSOLE.print(f"Service {service.name} ({service.uuid}) deleted")
-
-
-def account_set_network_access(session, conf):
+@cli.command("account-set-network-access")
+@click.argument("account")
+@click.option(
+    "--access-type",
+    type=click.Choice(["ALL", "RESTRICTED"]),
+    default="RESTRICTED",
+    help="Network access type",
+)
+@click.option("--tags", default="", help="Comma-separated tags for RESTRICTED access")
+@click.pass_context
+def account_set_network_access(ctx, account, access_type, tags):
     """Set network access type and tags for an account."""
-    account = _resolve_account(session, conf.account)
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        acc = _resolve_account(session, account)
 
-    tags = [t.strip() for t in conf.tags.split(",") if t.strip()] if conf.tags else []
+        tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
 
-    account.network_access_type = conf.access_type
-    account.network_access_tags = tags
-    account.save(session=session)
+        acc.network_access_type = access_type
+        acc.network_access_tags = tag_list
+        acc.save(session=session)
 
-    CONSOLE.print(
-        f"Account {account.account_name} ({account.uuid}) "
-        f"network access set to {conf.access_type}"
-    )
-    if tags:
-        CONSOLE.print(f"Tags: {', '.join(tags)}")
+        CONSOLE.print(
+            f"Account {acc.account_name} ({acc.uuid}) "
+            f"network access set to {access_type}"
+        )
+        if tag_list:
+            CONSOLE.print(f"Tags: {', '.join(tag_list)}")
 
 
-FUNC_MAPPING = {
-    "account-create": account_create,
-    "account-list": account_list,
-    "account-disable": account_disable,
-    "account-generate-config": account_generate_config,
-    "account-set-network-access": account_set_network_access,
-    "cert-list": cert_list,
-    "otp-add": otp_add,
-    "otp-list": otp_list,
-    "otp-remove": otp_remove,
-    "service-create": service_create,
-    "service-list": service_list,
-    "service-delete": service_delete,
-}
+# --- Certificate commands ---
+
+
+@cli.command("cert-list")
+@click.option("--user-id", default=None, help="Filter by user ID")
+@click.pass_context
+def cert_list(ctx, user_id):
+    """List certificates."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        filters = {}
+        if user_id:
+            filters["user_id"] = dm_filters.EQ(user_id)
+        certs = models.Certificate.objects.get_all(session=session, filters=filters)
+        table = Table(show_header=True, header_style="bold magenta")
+        table.add_column("uuid", style="dim", width=36)
+        table.add_column("account_name")
+        table.add_column("user_id")
+        table.add_column("serial")
+        for cert in certs:
+            table.add_row(
+                str(cert.uuid),
+                cert.common_name or "-",
+                cert.user_id,
+                str(cert.serial),
+            )
+
+        CONSOLE.print(table)
+
+
+# --- OTP device commands ---
+
+
+@cli.command("otp-add")
+@click.argument("account")
+@click.option("--name", default="Default", help="Device name")
+@click.pass_context
+def otp_add(ctx, account, name):
+    """Add an OTP device to an account."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        acc = _resolve_account(session, account)
+
+        secret = pyotp.random_base32()
+        device = models.OtpDevice(
+            otp_secret=secret,
+            name=name,
+            user_id=acc.user_id,
+        )
+        device.save(session=session)
+        rel = models.AccountOtpDevice(account=acc, otp_device=device)
+        rel.save(session=session)
+
+        uri = pyotp.TOTP(secret).provisioning_uri(
+            name=acc.account_name,
+            issuer_name=CONF[c.COMMON_DOMAIN].otp_issuer_name,
+        )
+        CONSOLE.print(f"OTP device added: {device.uuid}")
+        CONSOLE.print(f"Device name: {device.name}")
+        CONSOLE.print(f"Secret (base32): {secret}")
+        CONSOLE.print("[bold]OTP QR Code:[/bold]")
+        _print_otp_qrcode(uri)
+        CONSOLE.print("Scan the QR code with your authenticator app.")
+
+
+@cli.command("otp-list")
+@click.argument("account")
+@click.pass_context
+def otp_list(ctx, account):
+    """List OTP devices for an account."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        acc = _resolve_account(session, account)
+        filters = {"account": dm_filters.EQ(str(acc.uuid))}
+        rels = models.AccountOtpDevice.objects.get_all(session=session, filters=filters)
+        table = Table(show_header=True, header_style="bold magenta")
+        table.add_column("uuid", style="dim", width=36)
+        table.add_column("name")
+        table.add_column("otp_type")
+        table.add_column("status", justify="right")
+        for rel in rels:
+            device = rel.otp_device
+            table.add_row(
+                str(device.uuid),
+                device.name,
+                device.otp_type,
+                device.status,
+            )
+
+        CONSOLE.print(table)
+
+
+@cli.command("otp-remove")
+@click.argument("uuid")
+@click.pass_context
+def otp_remove(ctx, uuid):
+    """Disable an OTP device."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        filters = {"uuid": dm_filters.EQ(uuid)}
+        device = models.OtpDevice.objects.get_one(session=session, filters=filters)
+        device.disable(session=session)
+
+        CONSOLE.print(f"OTP device {device.uuid} ({device.name}) disabled")
+
+
+@cli.command("account-reset")
+@click.argument("account")
+@click.option(
+    "--pin-length", type=int, default=6, help="PIN length (min 6, auto-generated)"
+)
+@click.option("--disable-pbin", is_flag=True, default=False)
+@click.pass_context
+def account_reset(ctx, account, pin_length, disable_pbin):
+    """Reset PIN and OTP secret for an account."""
+    from exordos_vpn.common import crypto
+    from exordos_vpn.dm import models as dm_models
+
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        acc = _resolve_account(session, account)
+
+        # Reset PIN
+        new_pin = _generate_pin(length=pin_length)
+        new_salt = dm_models._generate_salt()
+        global_salt = CONF[c.COMMON_DOMAIN].global_salt
+        acc.pin_salt = new_salt
+        acc.pin_hash = dm_models._generate_pin_hash(new_pin, new_salt, global_salt)
+        acc.pin_length = pin_length
+        acc.save(session=session)
+
+        # Reset OTP: find or create a device
+        device, otp_created = _resolve_otp_device(session, acc)
+        new_secret = pyotp.random_base32()
+        device.otp_secret = crypto.encrypt_otp_secret(new_secret)
+        device.save(session=session)
+
+        # Build OTP URI and display
+        otp_uri = pyotp.TOTP(new_secret).provisioning_uri(
+            name=acc.account_name,
+            issuer_name=CONF[c.COMMON_DOMAIN].otp_issuer_name,
+        )
+
+        CONSOLE.print(f"Account {acc.uuid} ({acc.account_name}) reset")
+        CONSOLE.print(f"[bold]New PIN:[/bold] {new_pin}", style="bold yellow")
+        CONSOLE.print(f"New OTP secret (base32): {new_secret}")
+        CONSOLE.print("[bold]OTP QR Code:[/bold]")
+        _print_otp_qrcode(otp_uri)
+        CONSOLE.print("Scan the QR code with your authenticator app.")
+
+        # Send credentials to PrivateBin
+        credentials_text = _build_credentials_text(
+            acc.account_name,
+            new_pin,
+            otp_uri,
+        )
+        _pbin_send(disable_pbin, text=credentials_text)
+
+
+# --- Service commands ---
+
+
+@cli.command("service-create")
+@click.argument("name", type=str.lower)
+@click.option(
+    "--subnets",
+    required=True,
+    help="Comma-separated list of subnets (e.g. 10.0.0.0/8,172.16.0.0/12)",
+)
+@click.option(
+    "--tags", default="", help="Comma-separated tags (e.g. finance,engineering)"
+)
+@click.option("--description", default="", help="Service description")
+@click.option(
+    "--kinds",
+    default="",
+    help="Comma-separated list of firewall kinds. "
+    "Format: kind:type[,port-min-port] "
+    "(e.g. 'any,tcp:80-443,udp:53' or empty for any)",
+)
+@click.pass_context
+def service_create(ctx, name, subnets, tags, description, kinds):
+    """Create a new service."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        subnet_list = [
+            netaddr.IPNetwork(s.strip()) for s in subnets.split(",") if s.strip()
+        ]
+        tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+        kind_list = _parse_kinds(kinds)
+
+        kwargs = {}
+        if kind_list:
+            kwargs["kinds"] = kind_list
+
+        service = models.Service(
+            name=name,
+            subnets=subnet_list,
+            tags=tag_list,
+            description=description,
+            **kwargs,
+        )
+        service.save(session=session)
+
+        CONSOLE.print(f"Service created with uuid: {service.uuid}")
+        CONSOLE.print(f"Name: {service.name}")
+        CONSOLE.print(f"Subnets: {subnets}")
+        if service.tags:
+            CONSOLE.print(f"Tags: {', '.join(service.tags)}")
+        if service.description:
+            CONSOLE.print(f"Description: {service.description}")
+        if kind_list:
+            kinds_display = ", ".join(k.to_str() for k in service.kinds)
+            CONSOLE.print(f"Kinds: {kinds_display}")
+
+
+@cli.command("service-list")
+@click.pass_context
+def service_list(ctx):
+    """List all services."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        services = models.Service.objects.get_all(session=session)
+        table = Table(show_header=True, header_style="bold magenta")
+        table.add_column("uuid", style="dim", width=36)
+        table.add_column("name")
+        table.add_column("subnets")
+        table.add_column("tags")
+        table.add_column("description")
+        table.add_column("kinds")
+        for service in services:
+            kinds_str = (
+                ", ".join(k.to_str() for k in service.kinds) if service.kinds else "-"
+            )
+            table.add_row(
+                str(service.uuid),
+                service.name,
+                ", ".join(str(i) for i in service.subnets),
+                ", ".join(service.tags) if service.tags else "-",
+                service.description or "-",
+                kinds_str,
+            )
+
+        CONSOLE.print(table)
+
+
+@cli.command("service-delete")
+@click.argument("uuid")
+@click.pass_context
+def service_delete(ctx, uuid):
+    """Delete a service."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        filters = {"uuid": dm_filters.EQ(uuid)}
+        service = models.Service.objects.get_one(session=session, filters=filters)
+        service.delete(session=session)
+
+        CONSOLE.print(f"Service {service.name} ({service.uuid}) deleted")
 
 
 def main():
-    # Parse config
-    config.parse(sys.argv[1:])
-
-    # Configure logging
-    infra_log.configure()
-    log = logging.getLogger(__name__)
-    engines.engine_factory.configure_postgresql_factory(CONF)
-
-    ctx = contexts.Context()
-    with ctx.session_manager() as s:
-        FUNC_MAPPING[CONF.action.name](s, CONF.action)
+    cli()
 
 
 if __name__ == "__main__":

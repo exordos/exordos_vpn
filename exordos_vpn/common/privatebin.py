@@ -25,3 +25,12 @@ def send_file(server, text, file, expiration="1week", burn_after_reading=True):
         burn_after_reading=burn_after_reading,
         file=file,
     )
+
+
+def send_text(server, text, expiration="1week", burn_after_reading=True):
+    return privatebinapi.send(
+        server,
+        text=text,
+        expiration=expiration,
+        burn_after_reading=burn_after_reading,
+    )
