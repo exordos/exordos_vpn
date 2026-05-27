@@ -15,6 +15,7 @@
 #    under the License.
 
 import io
+import json
 import os
 import secrets
 import string
@@ -50,6 +51,24 @@ config.register_service_config_opts_file_only()
 
 # Set by _init_config from click's --config-dir
 _CONFIG_DIR = None
+
+FORMAT_TABLE = "table"
+FORMAT_JSON = "json"
+
+
+def _print_output(ctx, columns, rows):
+    """Print data as a table or JSON depending on --format option."""
+    fmt = ctx.obj.get("format", FORMAT_TABLE)
+    if fmt == FORMAT_JSON:
+        data = [dict(zip(columns, row)) for row in rows]
+        click.echo(json.dumps(data, indent=2, default=str))
+    else:
+        table = Table(show_header=True, header_style="bold magenta")
+        for col in columns:
+            table.add_column(col)
+        for row in rows:
+            table.add_row(*[str(v) for v in row])
+        CONSOLE.print(table)
 
 
 def _resolve_account(session, identifier):
@@ -238,12 +257,21 @@ def _ensure_config(ctx):
     show_default=True,
     help="Directory for config and template files.",
 )
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice([FORMAT_TABLE, FORMAT_JSON], case_sensitive=False),
+    default=FORMAT_TABLE,
+    show_default=True,
+    help="Output format.",
+)
 @click.pass_context
-def cli(ctx, config_file, config_dir):
+def cli(ctx, config_file, config_dir, output_format):
     """Exordos VPN CLI management tool."""
     ctx.ensure_object(dict)
     ctx.obj["config_file"] = config_file
     ctx.obj["config_dir"] = config_dir
+    ctx.obj["format"] = output_format
     ctx.obj["_config_initialized"] = False
 
 
@@ -346,22 +374,12 @@ def account_list(ctx, user_id):
         if user_id:
             filters["user_id"] = dm_filters.EQ(user_id)
         accounts = models.Account.objects.get_all(session=session, filters=filters)
-        table = Table(show_header=True, header_style="bold magenta")
-        table.add_column("uuid", style="dim", width=36)
-        table.add_column("user_id")
-        table.add_column("account_name")
-        table.add_column("auth_type")
-        table.add_column("status", justify="right")
-        for account in accounts:
-            table.add_row(
-                str(account.uuid),
-                account.user_id,
-                account.account_name,
-                account.auth_type,
-                account.status,
-            )
-
-        CONSOLE.print(table)
+        columns = ["uuid", "user_id", "account_name", "auth_type", "status"]
+        rows = [
+            (str(a.uuid), a.user_id, a.account_name, a.auth_type, a.status)
+            for a in accounts
+        ]
+        _print_output(ctx, columns, rows)
 
 
 @cli.command("account-disable")
@@ -542,37 +560,6 @@ def account_remove_network_tag(ctx, account, tags):
         CONSOLE.print(f"Current tags: {', '.join(acc.network_access_tags)}")
 
 
-# --- Certificate commands ---
-
-
-@cli.command("cert-list")
-@click.option("--user-id", default=None, help="Filter by user ID")
-@click.pass_context
-def cert_list(ctx, user_id):
-    """List certificates."""
-    _ensure_config(ctx)
-    session_ctx = ctx.obj["session_ctx"]
-    with session_ctx.session_manager() as session:
-        filters = {}
-        if user_id:
-            filters["user_id"] = dm_filters.EQ(user_id)
-        certs = models.Certificate.objects.get_all(session=session, filters=filters)
-        table = Table(show_header=True, header_style="bold magenta")
-        table.add_column("uuid", style="dim", width=36)
-        table.add_column("account_name")
-        table.add_column("user_id")
-        table.add_column("serial")
-        for cert in certs:
-            table.add_row(
-                str(cert.uuid),
-                cert.common_name or "-",
-                cert.user_id,
-                str(cert.serial),
-            )
-
-        CONSOLE.print(table)
-
-
 # --- OTP device commands ---
 
 
@@ -620,21 +607,12 @@ def otp_list(ctx, account):
         acc = _resolve_account(session, account)
         filters = {"account": dm_filters.EQ(str(acc.uuid))}
         rels = models.AccountOtpDevice.objects.get_all(session=session, filters=filters)
-        table = Table(show_header=True, header_style="bold magenta")
-        table.add_column("uuid", style="dim", width=36)
-        table.add_column("name")
-        table.add_column("otp_type")
-        table.add_column("status", justify="right")
-        for rel in rels:
-            device = rel.otp_device
-            table.add_row(
-                str(device.uuid),
-                device.name,
-                device.otp_type,
-                device.status,
-            )
-
-        CONSOLE.print(table)
+        columns = ["uuid", "name", "otp_type", "status"]
+        rows = [
+            (str(r.otp_device.uuid), r.otp_device.name, r.otp_device.otp_type, r.otp_device.status)
+            for r in rels
+        ]
+        _print_output(ctx, columns, rows)
 
 
 @cli.command("otp-remove")
@@ -668,6 +646,15 @@ def account_reset(ctx, account, pin_length, disable_pbin):
     session_ctx = ctx.obj["session_ctx"]
     with session_ctx.session_manager() as session:
         acc = _resolve_account(session, account)
+
+        CONSOLE.print(
+            f"[red]Warning:[/red] Resetting account "
+            f"{acc.account_name} ({acc.uuid}). "
+            f"The client will [bold]no longer be able to connect[/bold] "
+            f"with the old PIN and OTP code."
+        )
+        if not click.confirm("Proceed with reset?"):
+            raise SystemExit(0)
 
         # Reset PIN
         new_pin = _generate_pin(length=pin_length)
@@ -772,27 +759,19 @@ def service_list(ctx):
     session_ctx = ctx.obj["session_ctx"]
     with session_ctx.session_manager() as session:
         services = models.Service.objects.get_all(session=session)
-        table = Table(show_header=True, header_style="bold magenta")
-        table.add_column("uuid", style="dim", width=36)
-        table.add_column("name")
-        table.add_column("subnets")
-        table.add_column("tags")
-        table.add_column("description")
-        table.add_column("kinds")
-        for service in services:
-            kinds_str = (
-                ", ".join(k.to_str() for k in service.kinds) if service.kinds else "-"
+        columns = ["uuid", "name", "subnets", "tags", "description", "kinds"]
+        rows = [
+            (
+                str(s.uuid),
+                s.name,
+                ", ".join(str(i) for i in s.subnets),
+                ", ".join(s.tags) if s.tags else "-",
+                s.description or "-",
+                ", ".join(k.to_str() for k in s.kinds) if s.kinds else "-",
             )
-            table.add_row(
-                str(service.uuid),
-                service.name,
-                ", ".join(str(i) for i in service.subnets),
-                ", ".join(service.tags) if service.tags else "-",
-                service.description or "-",
-                kinds_str,
-            )
-
-        CONSOLE.print(table)
+            for s in services
+        ]
+        _print_output(ctx, columns, rows)
 
 
 @cli.command("service-delete")
