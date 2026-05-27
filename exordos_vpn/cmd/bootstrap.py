@@ -53,7 +53,7 @@ def main():
     cfg.CONF()
 
     # Configure logging
-    log = logging.getLogger(__name__)
+    _ = logging.getLogger(__name__)
 
     auth = iam_clients.GenesisCoreAuth(username=CONF.login, password=CONF.password)
     client = iam_clients.GenesisCoreTestRESTClient(endpoint=CONF.endpoint, auth=auth)

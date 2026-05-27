@@ -14,7 +14,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from gcl_iam import drivers
 from gcl_iam import middlewares as iam_mw
 from restalchemy.api import applications
 from restalchemy.api.middlewares import logging as logging_mw
