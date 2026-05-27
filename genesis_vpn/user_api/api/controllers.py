@@ -15,7 +15,10 @@
 #    under the License.
 
 import collections
+import json
+import logging
 import urllib.parse
+import urllib.request
 
 import netaddr
 from oslo_config import cfg
@@ -111,5 +114,25 @@ class AddressesPerUserController(
         for cert in certs:
             for subnet in subnets:
                 res[cert.user_id].append(str(subnet + cert.address_offset))
+
+        ext_url = CONF[c.COMMON_DOMAIN].external_addresses_api_url
+        if ext_url:
+            try:
+                req = urllib.request.Request(ext_url)
+                token = CONF[c.COMMON_DOMAIN].external_addresses_api_token
+                if token:
+                    req.add_header("Authorization", f"Bearer {token}")
+                with urllib.request.urlopen(req) as resp:
+                    ext_data = json.loads(resp.read().decode("utf-8"))
+                for user_id, addresses in ext_data.items():
+                    if not user_id in res:
+                        res[user_id] = addresses
+                    else:
+                        res[user_id].extend(addresses)
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Failed to fetch external addresses API"
+                )
+                raise
 
         return res

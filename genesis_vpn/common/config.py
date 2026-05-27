@@ -116,6 +116,17 @@ service_config_opts = [
         default="",
         help="Privatebin endpoint to paste config to. Can be disabled with --disable-pbin.",
     ),
+    cfg.StrOpt(
+        "external-addresses-api-url",
+        default="",
+        help="URL of the external addresses per user API to merge addresses from. "
+        "Disabled if empty.",
+    ),
+    cfg.StrOpt(
+        "external-addresses-api-token",
+        default="",
+        help="Bearer token for the external addresses per user API.",
+    ),
 ]
 
 
