@@ -98,7 +98,7 @@ service_config_opts = [
     cfg.StrOpt(
         "credentials-template",
         required=True,
-        default="credentials.txt.j2",
+        default="credentials_en.txt.j2",
         help="Path to the credentials text template file",
     ),
     cfg.IntOpt(
@@ -143,7 +143,7 @@ service_config_opts = [
     ),
     cfg.StrOpt(
         "otp-issuer-name",
-        default="ExordosVPN",
+        default="Exordos VPN",
         help="Issuer name for OTP provisioning URI (displayed in authenticator apps).",
     ),
 ]

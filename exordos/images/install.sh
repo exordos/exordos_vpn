@@ -67,7 +67,7 @@ ln -sf "$VENV_PATH/bin/exordos-vpn-import-certs" "/usr/bin/exordos-vpn-import-ce
 ln -sf "$VENV_PATH/bin/exordos-vpn-cli" "/usr/bin/exordos-vpn-cli"
 
 # Bash autocompletion for exordos-vpn-cli
-_EXORDOS_VPN_CLI_COMPLETE=bash_source exordos-vpn-cli > /etc/bash_completion.d/exordos-vpn-cli 2>/dev/null || true
+_EXORDOS_VPN_CLI_COMPLETE=bash_source exordos-vpn-cli > /etc/bash_completion.d/exordos-vpn-cli
 
 # Install Systemd service files
 cp "$GC_PATH/etc/systemd/exordos-vpn-user-api.service" $SYSTEMD_SERVICE_DIR
