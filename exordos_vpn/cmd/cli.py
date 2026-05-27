@@ -433,7 +433,26 @@ def account_generate_config_cmd(ctx, account, otp_uuid, disable_pbin):
         _account_generate_config(session, account, disable_pbin)
 
 
-@cli.command("account-set-network-access")
+@cli.command("account-network-show")
+@click.argument("account")
+@click.pass_context
+def account_network_show(ctx, account):
+    """Show network access rules for an account."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        acc = _resolve_account(session, account)
+
+        CONSOLE.print(f"Account: {acc.account_name} ({acc.uuid})")
+        CONSOLE.print(f"Access type: {acc.network_access_type}")
+        tags = acc.network_access_tags or []
+        if tags:
+            CONSOLE.print(f"Tags: {', '.join(tags)}")
+        else:
+            CONSOLE.print("Tags: (none)")
+
+
+@cli.command("account-network-reset")
 @click.argument("account")
 @click.option(
     "--access-type",
@@ -443,8 +462,8 @@ def account_generate_config_cmd(ctx, account, otp_uuid, disable_pbin):
 )
 @click.option("--tags", default="", help="Comma-separated tags for RESTRICTED access")
 @click.pass_context
-def account_set_network_access(ctx, account, access_type, tags):
-    """Set network access type and tags for an account."""
+def account_reset_network_access(ctx, account, access_type, tags):
+    """Reset network access type and tags for an account (full overwrite)."""
     _ensure_config(ctx)
     session_ctx = ctx.obj["session_ctx"]
     with session_ctx.session_manager() as session:
@@ -452,16 +471,75 @@ def account_set_network_access(ctx, account, access_type, tags):
 
         tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
 
+        # If no explicit options, confirm before resetting to defaults
+        is_default = access_type == "RESTRICTED" and not tag_list
+        if is_default:
+            current_tags = acc.network_access_tags or []
+            CONSOLE.print(
+                f"Account {acc.account_name} ({acc.uuid}) "
+                f"current: {acc.network_access_type}, "
+                f"tags: {', '.join(current_tags) or '(none)'}"
+            )
+            if not click.confirm("Reset to RESTRICTED with no tags?"):
+                raise SystemExit(0)
+
         acc.network_access_type = access_type
         acc.network_access_tags = tag_list
         acc.save(session=session)
 
         CONSOLE.print(
             f"Account {acc.account_name} ({acc.uuid}) "
-            f"network access set to {access_type}"
+            f"network access reset to {access_type}"
         )
         if tag_list:
             CONSOLE.print(f"Tags: {', '.join(tag_list)}")
+
+
+@cli.command("account-network-add-tag")
+@click.argument("account")
+@click.argument("tags")
+@click.pass_context
+def account_add_network_tag(ctx, account, tags):
+    """Add network access tags to an account."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        acc = _resolve_account(session, account)
+
+        new_tags = [t.strip() for t in tags.split(",") if t.strip()]
+        existing = list(acc.network_access_tags or [])
+        added = [t for t in new_tags if t not in existing]
+        acc.network_access_tags = existing + added
+        acc.save(session=session)
+
+        CONSOLE.print(
+            f"Account {acc.account_name} ({acc.uuid}) "
+            f"tags added: {', '.join(added)}"
+        )
+        CONSOLE.print(f"Current tags: {', '.join(acc.network_access_tags)}")
+
+
+@cli.command("account-network-remove-tag")
+@click.argument("account")
+@click.argument("tags")
+@click.pass_context
+def account_remove_network_tag(ctx, account, tags):
+    """Remove network access tags from an account."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        acc = _resolve_account(session, account)
+
+        remove_tags = [t.strip() for t in tags.split(",") if t.strip()]
+        existing = list(acc.network_access_tags or [])
+        acc.network_access_tags = [t for t in existing if t not in remove_tags]
+        acc.save(session=session)
+
+        CONSOLE.print(
+            f"Account {acc.account_name} ({acc.uuid}) "
+            f"tags removed: {', '.join(remove_tags)}"
+        )
+        CONSOLE.print(f"Current tags: {', '.join(acc.network_access_tags)}")
 
 
 # --- Certificate commands ---
