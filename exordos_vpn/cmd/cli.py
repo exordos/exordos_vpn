@@ -137,24 +137,35 @@ def _build_credentials_text(account_name, pin, otp_uri, *, otp_created=True):
 def _resolve_otp_device(session, account, otp_uuid=None):
     """Resolve which OTP device to use for an account.
 
+    One OTP device is shared across all accounts of the same user_id.
+
     - If otp_uuid is explicitly provided, use that device.
-    - If no OTP devices exist, create one and return it.
-    - If exactly one OTP device exists, use it.
+    - If no OTP devices exist for this user_id, create one and return it.
+    - If exactly one OTP device exists for this user_id, use it.
     - If more than one exists, raise an error asking to specify.
     """
     if otp_uuid:
-        filters = {
-            "otp_device": dm_filters.EQ(otp_uuid),
+        filters = {"uuid": dm_filters.EQ(otp_uuid)}
+        device = models.OtpDevice.objects.get_one(session=session, filters=filters)
+        # Ensure the device is linked to this account
+        link_filters = {
+            "otp_device": dm_filters.EQ(device),
             "account": dm_filters.EQ(account),
         }
-        rel = models.AccountOtpDevice.objects.get_one(session=session, filters=filters)
-        return rel.otp_device, False  # (device, created=False)
+        existing = models.AccountOtpDevice.objects.get_all(
+            session=session, filters=link_filters,
+        )
+        if not existing:
+            rel = models.AccountOtpDevice(account=account, otp_device=device)
+            rel.save(session=session)
+        return device, False  # (device, created=False)
 
-    filters = {"account": dm_filters.EQ(account)}
-    rels = models.AccountOtpDevice.objects.get_all(session=session, filters=filters)
+    # Search OTP devices by user_id (shared across all user's accounts)
+    filters = {"user_id": dm_filters.EQ(account.user_id)}
+    devices = models.OtpDevice.objects.get_all(session=session, filters=filters)
 
-    if len(rels) == 0:
-        # No OTP device exists — create one
+    if len(devices) == 0:
+        # No OTP device exists for this user — create one
         otp_secret = pyotp.random_base32()
         device = models.OtpDevice(
             otp_secret=otp_secret,
@@ -165,16 +176,27 @@ def _resolve_otp_device(session, account, otp_uuid=None):
         rel = models.AccountOtpDevice(account=account, otp_device=device)
         rel.save(session=session)
         return device, True  # (device, created)
-    elif len(rels) == 1:
-        return rels[0].otp_device, False
+    elif len(devices) == 1:
+        device = devices[0]
+        # Ensure the device is linked to this account
+        link_filters = {
+            "otp_device": dm_filters.EQ(device),
+            "account": dm_filters.EQ(account),
+        }
+        existing = models.AccountOtpDevice.objects.get_all(
+            session=session, filters=link_filters,
+        )
+        if not existing:
+            rel = models.AccountOtpDevice(account=account, otp_device=device)
+            rel.save(session=session)
+        return device, False
     else:
-        CONSOLE.print("Account has multiple OTP devices. Please specify --otp-uuid.")
+        CONSOLE.print("User has multiple OTP devices. Please specify --otp-uuid.")
         table = Table(show_header=True, header_style="bold magenta")
         table.add_column("uuid", style="dim", width=36)
         table.add_column("name")
         table.add_column("status")
-        for rel in rels:
-            d = rel.otp_device
+        for d in devices:
             table.add_row(str(d.uuid), d.name, d.status)
         CONSOLE.print(table)
         raise SystemExit(1)
@@ -574,28 +596,42 @@ def account_remove_network_tag(ctx, account, tags):
 
 
 @cli.command("otp-add")
-@click.argument("account")
+@click.argument("user_id")
 @click.option("--name", default="Default", help="Device name")
 @click.pass_context
-def otp_add(ctx, account, name):
-    """Add an OTP device to an account."""
+def otp_add(ctx, user_id, name):
+    """Add an OTP device to a user."""
     _ensure_config(ctx)
     session_ctx = ctx.obj["session_ctx"]
     with session_ctx.session_manager() as session:
-        acc = _resolve_account(session, account)
-
         secret = pyotp.random_base32()
         device = models.OtpDevice(
             otp_secret=secret,
             name=name,
-            user_id=acc.user_id,
+            user_id=user_id,
         )
         device.save(session=session)
-        rel = models.AccountOtpDevice(account=acc, otp_device=device)
-        rel.save(session=session)
+
+        # Link the device to all active accounts of this user
+        filters = {
+            "user_id": dm_filters.EQ(user_id),
+            "status": dm_filters.EQ("ACTIVE"),
+        }
+        accounts = models.Account.objects.get_all(session=session, filters=filters)
+        for acc in accounts:
+            link_filters = {
+                "otp_device": dm_filters.EQ(device),
+                "account": dm_filters.EQ(acc),
+            }
+            existing = models.AccountOtpDevice.objects.get_all(
+                session=session, filters=link_filters,
+            )
+            if not existing:
+                rel = models.AccountOtpDevice(account=acc, otp_device=device)
+                rel.save(session=session)
 
         uri = pyotp.TOTP(secret).provisioning_uri(
-            name=acc.account_name,
+            name=user_id,
             issuer_name=CONF[c.COMMON_DOMAIN].otp_issuer_name,
         )
         CONSOLE.print(f"OTP device added: {device.uuid}")
@@ -607,26 +643,32 @@ def otp_add(ctx, account, name):
 
 
 @cli.command("otp-list")
-@click.argument("account")
+@click.argument("user_id")
 @click.pass_context
-def otp_list(ctx, account):
-    """List OTP devices for an account."""
+def otp_list(ctx, user_id):
+    """List OTP devices for a user."""
     _ensure_config(ctx)
     session_ctx = ctx.obj["session_ctx"]
     with session_ctx.session_manager() as session:
-        acc = _resolve_account(session, account)
-        filters = {"account": dm_filters.EQ(str(acc.uuid))}
-        rels = models.AccountOtpDevice.objects.get_all(session=session, filters=filters)
-        columns = ["uuid", "name", "otp_type", "status"]
-        rows = [
-            (
-                str(r.otp_device.uuid),
-                r.otp_device.name,
-                r.otp_device.otp_type,
-                r.otp_device.status,
+        filters = {"user_id": dm_filters.EQ(user_id)}
+        devices = models.OtpDevice.objects.get_all(session=session, filters=filters)
+        columns = ["uuid", "name", "otp_type", "status", "accounts"]
+        rows = []
+        for d in devices:
+            link_filters = {"otp_device": dm_filters.EQ(d)}
+            rels = models.AccountOtpDevice.objects.get_all(
+                session=session, filters=link_filters,
             )
-            for r in rels
-        ]
+            account_names = ", ".join(
+                r.account.account_name for r in rels
+            )
+            rows.append((
+                str(d.uuid),
+                d.name,
+                d.otp_type,
+                d.status,
+                account_names,
+            ))
         _print_output(ctx, columns, rows)
 
 
@@ -643,6 +685,50 @@ def otp_remove(ctx, uuid):
         device.disable(session=session)
 
         CONSOLE.print(f"OTP device {device.uuid} ({device.name}) disabled")
+
+
+@cli.command("account-set-otp")
+@click.argument("account")
+@click.option("--otp-uuid", default=None, help="UUID of existing OTP device to assign")
+@click.pass_context
+def account_set_otp(ctx, account, otp_uuid):
+    """Set or replace the OTP device for an account.
+
+    If --otp-uuid is provided, assign that existing device.
+    Otherwise, create a new OTP device for the user.
+    """
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        acc = _resolve_account(session, account)
+
+        # Remove existing OTP device links for this account
+        link_filters = {"account": dm_filters.EQ(acc)}
+        old_rels = models.AccountOtpDevice.objects.get_all(
+            session=session, filters=link_filters,
+        )
+        for rel in old_rels:
+            rel.delete(session=session)
+
+        # Resolve the new OTP device
+        device, otp_created = _resolve_otp_device(
+            session, acc, otp_uuid=otp_uuid,
+        )
+
+        if otp_created:
+            otp_secret = device.get_decrypted_secret()
+            otp_uri = pyotp.TOTP(otp_secret).provisioning_uri(
+                name=acc.account_name,
+                issuer_name=CONF[c.COMMON_DOMAIN].otp_issuer_name,
+            )
+            CONSOLE.print(f"New OTP device created: {device.uuid}")
+            CONSOLE.print(f"Secret (base32): {otp_secret}")
+            CONSOLE.print("[bold]OTP QR Code:[/bold]")
+            _print_otp_qrcode(otp_uri)
+            CONSOLE.print("Scan the QR code with your authenticator app.")
+        else:
+            CONSOLE.print(f"OTP device assigned: {device.uuid} ({device.name})")
+            CONSOLE.print("[bold]OTP:[/bold] Use previously issued OTP for VPN")
 
 
 @cli.command("account-reset")
