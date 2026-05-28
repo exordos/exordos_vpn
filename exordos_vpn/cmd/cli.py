@@ -107,17 +107,19 @@ def _generate_pin(length=6):
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
-def _build_credentials_text(account_name, pin, otp_uri):
+def _build_credentials_text(account_name, pin, otp_uri, *, otp_created=True):
     """Build credentials text for the user."""
-    # Generate QR code as ASCII text for inclusion in the message
-    qr = qrcode.QRCode(
-        error_correction=qrcode.constants.ERROR_CORRECT_L,
-    )
-    qr.add_data(otp_uri)
-    qr.make(fit=True)
-    buf = io.StringIO()
-    qr.print_ascii(out=buf)
-    qr_text = buf.getvalue()
+    qr_text = ""
+    if otp_created and otp_uri:
+        # Generate QR code as ASCII text for inclusion in the message
+        qr = qrcode.QRCode(
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+        )
+        qr.add_data(otp_uri)
+        qr.make(fit=True)
+        buf = io.StringIO()
+        qr.print_ascii(out=buf)
+        qr_text = buf.getvalue()
 
     template_name = CONF[c.COMMON_DOMAIN].credentials_template
     template_file = os.path.join(_CONFIG_DIR, template_name)
@@ -127,7 +129,8 @@ def _build_credentials_text(account_name, pin, otp_uri):
         account_name=account_name,
         pin=pin,
         qr_text=qr_text,
-        otp_uri=otp_uri,
+        otp_uri=otp_uri or "",
+        otp_created=otp_created,
     )
 
 
@@ -324,13 +327,16 @@ def account_create(ctx, user_id, name, pin_length, disable_pbin):
 
         # Resolve OTP device (new account — will create one)
         device, otp_created = _resolve_otp_device(session, account)
-        otp_secret = device.get_decrypted_secret()
 
-        # Generate OTP provisioning URI and QR code
-        otp_uri = pyotp.TOTP(otp_secret).provisioning_uri(
-            name=account.account_name,
-            issuer_name=CONF[c.COMMON_DOMAIN].otp_issuer_name,
-        )
+        otp_uri = None
+        if otp_created:
+            otp_secret = device.get_decrypted_secret()
+
+            # Generate OTP provisioning URI and QR code
+            otp_uri = pyotp.TOTP(otp_secret).provisioning_uri(
+                name=account.account_name,
+                issuer_name=CONF[c.COMMON_DOMAIN].otp_issuer_name,
+            )
 
         CONSOLE.print(f"Account created with uuid: {account.uuid}")
         CONSOLE.print(f"Account name: {account.account_name}")
@@ -344,11 +350,14 @@ def account_create(ctx, user_id, name, pin_length, disable_pbin):
         CONSOLE.print()
         CONSOLE.print("[bold]Login:[/bold] " + account.account_name)
         CONSOLE.print("[bold]PIN:[/bold] " + pin, style="bold yellow")
-        CONSOLE.print("[bold]OTP Secret (base32):[/bold] " + otp_secret)
-        CONSOLE.print("[bold]OTP QR Code:[/bold]")
-        _print_otp_qrcode(otp_uri)
-        CONSOLE.print()
-        CONSOLE.print("Scan the QR code with your authenticator app.")
+        if otp_created:
+            CONSOLE.print("[bold]OTP Secret (base32):[/bold] " + otp_secret)
+            CONSOLE.print("[bold]OTP QR Code:[/bold]")
+            _print_otp_qrcode(otp_uri)
+            CONSOLE.print()
+            CONSOLE.print("Scan the QR code with your authenticator app.")
+        else:
+            CONSOLE.print("[bold]OTP:[/bold] Use previously issued OTP for VPN")
 
         # Generate config file and send everything to PrivateBin
         config_file = _account_generate_config(
@@ -358,7 +367,9 @@ def account_create(ctx, user_id, name, pin_length, disable_pbin):
             send_to_pbin=False,
         )
 
-        credentials_text = _build_credentials_text(account.account_name, pin, otp_uri)
+        credentials_text = _build_credentials_text(
+            account.account_name, pin, otp_uri, otp_created=otp_created,
+        )
         _pbin_send(disable_pbin, text=credentials_text, config_file=config_file)
 
 
