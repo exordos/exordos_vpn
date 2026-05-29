@@ -324,9 +324,16 @@ def cli(ctx, config_file, config_dir, output_format):
 @click.option(
     "--pin-length", type=int, default=6, help="PIN length (min 6, auto-generated)"
 )
+@click.option(
+    "--access-type",
+    type=click.Choice(["ALL", "RESTRICTED"]),
+    default="RESTRICTED",
+    help="Network access type (set during creation)",
+)
+@click.option("--tags", default="", help="Comma-separated tags for RESTRICTED access")
 @click.option("--disable-pbin", is_flag=True, default=False)
 @click.pass_context
-def account_create(ctx, user_id, name, pin_length, disable_pbin):
+def account_create(ctx, user_id, name, pin_length, access_type, tags, disable_pbin):
     """Create a new account."""
     _ensure_config(ctx)
     session_ctx = ctx.obj["session_ctx"]
@@ -363,6 +370,12 @@ def account_create(ctx, user_id, name, pin_length, disable_pbin):
                 account=account,
             )
             cert.save(session=session)
+
+        # Set network access rules
+        tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+        account.network_access_type = access_type
+        account.network_access_tags = tag_list
+        account.save(session=session)
 
         # Resolve OTP device (new account — will create one)
         device, otp_created = _resolve_otp_device(session, account)
