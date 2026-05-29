@@ -52,7 +52,7 @@ Global options:
 
 | Command | Description |
 |---|---|
-| `account-create <user_id> [--name NAME] [--pin-length N] [--disable-pbin]` | Create account (auto PIN + OTP, cert if configured) |
+| `account-create <user_id> [--name NAME] [--pin-length N] [--access-type ALL\|RESTRICTED] [--tags TAGS] [--disable-pbin]` | Create account with PIN, OTP, cert (if configured), and network access rules |
 | `account-list [--user-id UID]` | List accounts |
 | `account-disable <account>` | Disable account |
 | `account-generate-config <account> [--otp-uuid UUID] [--disable-pbin]` | Generate .ovpn config |
@@ -92,6 +92,18 @@ One OTP device is shared across all accounts of the same `user_id`.
 | `service-add-kind <uuid> <kinds>` | Add firewall kinds |
 | `service-remove-kind <uuid> <kinds>` | Remove firewall kinds |
 | `service-delete <uuid>` | Delete service |
+
+### PrivateBin Delivery
+
+Commands marked with 📋 send credentials to PrivateBin (if `privatebin-endpoint` is configured and `--disable-pbin` is not set):
+
+| Command | Delivers to client |
+|---|---|
+| 📋 `account-create` | Credentials text (login, PIN, OTP QR/URI if new) + .ovpn config file |
+| 📋 `account-reset` | Credentials text (login, new PIN, new OTP QR/URI) + .ovpn config file |
+| 📋 `account-generate-config` | .ovpn config file |
+
+When `show-credentials=false` (default), sensitive data (PIN, OTP secret, QR code) is **not** printed to the console — only sent via PrivateBin link.
 
 ### Configuration
 
