@@ -437,9 +437,21 @@ def account_list(ctx, user_id):
         if user_id:
             filters["user_id"] = dm_filters.EQ(user_id)
         accounts = models.Account.objects.get_all(session=session, filters=filters)
-        columns = ["uuid", "user_id", "account_name", "auth_type", "status"]
+        columns = [
+            "uuid", "user_id", "account_name", "auth_type", "status",
+            "network_access_type", "tags", "updated_at",
+        ]
         rows = [
-            (str(a.uuid), a.user_id, a.account_name, a.auth_type, a.status)
+            (
+                str(a.uuid),
+                a.user_id,
+                a.account_name,
+                a.auth_type,
+                a.status,
+                a.network_access_type or "-",
+                ", ".join(a.network_access_tags) if a.network_access_tags else "-",
+                a.updated_at.isoformat() if a.updated_at else "-",
+            )
             for a in accounts
         ]
         _print_output(ctx, columns, rows)
