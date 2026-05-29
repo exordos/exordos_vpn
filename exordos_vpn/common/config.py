@@ -146,6 +146,12 @@ service_config_opts = [
         default="Exordos VPN",
         help="Issuer name for OTP provisioning URI (displayed in authenticator apps).",
     ),
+    cfg.BoolOpt(
+        "show-credentials",
+        default=False,
+        help="Whether to print sensitive credentials (PIN, OTP secret, QR code) "
+        "to the console. When disabled, credentials are only sent to PrivateBin.",
+    ),
 ]
 
 
