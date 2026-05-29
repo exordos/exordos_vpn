@@ -31,6 +31,7 @@ from oslo_config import cfg
 from restalchemy.common import config_opts as ra_config_opts
 from restalchemy.common import contexts
 from restalchemy.dm import filters as dm_filters
+from restalchemy.storage import exceptions as ra_exceptions
 from restalchemy.storage.sql import engines
 from rich.console import Console
 from rich.table import Table
@@ -103,14 +104,14 @@ def _resolve_account(session, identifier):
 
 def _generate_pin(length=6):
     """Generate a random PIN with letters and digits of the given length."""
-    alphabet = string.ascii_letters + string.digits
+    alphabet = string.ascii_lowercase + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
-def _build_credentials_text(account_name, pin, otp_uri, *, otp_created=True):
+def _build_credentials_text(account_name, pin, otp_uri=None):
     """Build credentials text for the user."""
     qr_text = ""
-    if otp_created and otp_uri:
+    if otp_uri:
         # Generate QR code as ASCII text for inclusion in the message
         qr = qrcode.QRCode(
             error_correction=qrcode.constants.ERROR_CORRECT_L,
@@ -130,7 +131,6 @@ def _build_credentials_text(account_name, pin, otp_uri, *, otp_created=True):
         pin=pin,
         qr_text=qr_text,
         otp_uri=otp_uri or "",
-        otp_created=otp_created,
     )
 
 
@@ -202,8 +202,18 @@ def _resolve_otp_device(session, account, otp_uuid=None):
         raise SystemExit(1)
 
 
+def _secure_print(*args, **kwargs):
+    """Print sensitive data only if show-credentials is enabled in config."""
+    if CONF[c.COMMON_DOMAIN].show_credentials:
+        CONSOLE.print(*args, **kwargs)
+    else:
+        CONSOLE.print("[dim](credentials hidden, see PrivateBin link)[/dim]")
+
+
 def _print_otp_qrcode(uri):
     """Print OTP provisioning URI as a QR code in the terminal."""
+    if not CONF[c.COMMON_DOMAIN].show_credentials:
+        return
     qr = qrcode.QRCode(
         error_correction=qrcode.constants.ERROR_CORRECT_L,
     )
@@ -336,7 +346,14 @@ def account_create(ctx, user_id, name, pin_length, disable_pbin):
             kwargs["account_name"] = f"{user_id}_{kwargs['account_name']}"
 
         account = models.Account(**kwargs)
-        account.save(session=session)
+        try:
+            account.save(session=session)
+        except ra_exceptions.ConflictRecords:
+            CONSOLE.print(
+                f"[red]Error: Account with name "
+                f"'{kwargs['account_name']}' already exists, please use another one.[/red]"
+            )
+            raise SystemExit(1)
 
         # Create a certificate if configured
         cert = None
@@ -353,8 +370,6 @@ def account_create(ctx, user_id, name, pin_length, disable_pbin):
         otp_uri = None
         if otp_created:
             otp_secret = device.get_decrypted_secret()
-
-            # Generate OTP provisioning URI and QR code
             otp_uri = pyotp.TOTP(otp_secret).provisioning_uri(
                 name=account.account_name,
                 issuer_name=CONF[c.COMMON_DOMAIN].otp_issuer_name,
@@ -363,21 +378,21 @@ def account_create(ctx, user_id, name, pin_length, disable_pbin):
         CONSOLE.print(f"Account created with uuid: {account.uuid}")
         CONSOLE.print(f"Account name: {account.account_name}")
         CONSOLE.print(f"Auth type: {account.auth_type}")
+        CONSOLE.print()
+        _secure_print("[bold]Login:[/bold] " + account.account_name)
+        _secure_print("[bold]PIN:[/bold] " + pin, style="bold yellow")
         if cert:
             CONSOLE.print(f"Certificate uuid: {cert.uuid}")
         if otp_created:
             CONSOLE.print(f"OTP device created: {device.uuid}")
         else:
             CONSOLE.print(f"OTP device: {device.uuid} (existing)")
-        CONSOLE.print()
-        CONSOLE.print("[bold]Login:[/bold] " + account.account_name)
-        CONSOLE.print("[bold]PIN:[/bold] " + pin, style="bold yellow")
+
         if otp_created:
-            CONSOLE.print("[bold]OTP Secret (base32):[/bold] " + otp_secret)
-            CONSOLE.print("[bold]OTP QR Code:[/bold]")
+            _secure_print("[bold]OTP Secret (base32):[/bold] " + otp_secret)
+            _secure_print("[bold]OTP QR Code:[/bold]")
             _print_otp_qrcode(otp_uri)
             CONSOLE.print()
-            CONSOLE.print("Scan the QR code with your authenticator app.")
         else:
             CONSOLE.print("[bold]OTP:[/bold] Use previously issued OTP for VPN")
 
@@ -390,7 +405,7 @@ def account_create(ctx, user_id, name, pin_length, disable_pbin):
         )
 
         credentials_text = _build_credentials_text(
-            account.account_name, pin, otp_uri, otp_created=otp_created,
+            account.account_name, pin, otp_uri=otp_uri,
         )
         _pbin_send(disable_pbin, text=credentials_text, config_file=config_file)
 
@@ -636,8 +651,8 @@ def otp_add(ctx, user_id, name):
         )
         CONSOLE.print(f"OTP device added: {device.uuid}")
         CONSOLE.print(f"Device name: {device.name}")
-        CONSOLE.print(f"Secret (base32): {secret}")
-        CONSOLE.print("[bold]OTP QR Code:[/bold]")
+        _secure_print(f"Secret (base32): {secret}")
+        _secure_print("[bold]OTP QR Code:[/bold]")
         _print_otp_qrcode(uri)
         CONSOLE.print("Scan the QR code with your authenticator app.")
 
@@ -722,8 +737,8 @@ def account_set_otp(ctx, account, otp_uuid):
                 issuer_name=CONF[c.COMMON_DOMAIN].otp_issuer_name,
             )
             CONSOLE.print(f"New OTP device created: {device.uuid}")
-            CONSOLE.print(f"Secret (base32): {otp_secret}")
-            CONSOLE.print("[bold]OTP QR Code:[/bold]")
+            _secure_print(f"Secret (base32): {otp_secret}")
+            _secure_print("[bold]OTP QR Code:[/bold]")
             _print_otp_qrcode(otp_uri)
             CONSOLE.print("Scan the QR code with your authenticator app.")
         else:
@@ -779,19 +794,25 @@ def account_reset(ctx, account, pin_length, disable_pbin):
         )
 
         CONSOLE.print(f"Account {acc.uuid} ({acc.account_name}) reset")
-        CONSOLE.print(f"[bold]New PIN:[/bold] {new_pin}", style="bold yellow")
-        CONSOLE.print(f"New OTP secret (base32): {new_secret}")
-        CONSOLE.print("[bold]OTP QR Code:[/bold]")
+        _secure_print(f"[bold]New PIN:[/bold] {new_pin}", style="bold yellow")
+        _secure_print(f"New OTP secret (base32): {new_secret}")
+        _secure_print("[bold]OTP QR Code:[/bold]")
         _print_otp_qrcode(otp_uri)
-        CONSOLE.print("Scan the QR code with your authenticator app.")
 
-        # Send credentials to PrivateBin
+        # Generate config file and send everything to PrivateBin
+        config_file = _account_generate_config(
+            session,
+            str(acc.uuid),
+            disable_pbin,
+            send_to_pbin=False,
+        )
+
         credentials_text = _build_credentials_text(
             acc.account_name,
             new_pin,
             otp_uri,
         )
-        _pbin_send(disable_pbin, text=credentials_text)
+        _pbin_send(disable_pbin, text=credentials_text, config_file=config_file)
 
 
 # --- Service commands ---
@@ -873,6 +894,211 @@ def service_list(ctx):
             for s in services
         ]
         _print_output(ctx, columns, rows)
+
+
+@cli.command("service-reset")
+@click.argument("uuid")
+@click.option("--name", default=None, help="New service name")
+@click.option(
+    "--subnets",
+    default=None,
+    help="Comma-separated list of subnets (full overwrite)",
+)
+@click.option(
+    "--tags", default=None, help="Comma-separated tags (full overwrite)"
+)
+@click.option("--description", default=None, help="Service description")
+@click.option(
+    "--kinds",
+    default=None,
+    help="Comma-separated list of firewall kinds (full overwrite). "
+    "Format: kind:type[,port-min-port] "
+    "(e.g. 'any,tcp:80-443,udp:53' or empty for any)",
+)
+@click.pass_context
+def service_reset(ctx, uuid, name, subnets, tags, description, kinds):
+    """Reset service fields (full overwrite for each specified option)."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        filters = {"uuid": dm_filters.EQ(uuid)}
+        service = models.Service.objects.get_one(session=session, filters=filters)
+
+        if name is not None:
+            service.name = name
+        if subnets is not None:
+            service.subnets = [
+                netaddr.IPNetwork(s.strip()) for s in subnets.split(",") if s.strip()
+            ]
+        if tags is not None:
+            service.tags = [t.strip() for t in tags.split(",") if t.strip()]
+        if description is not None:
+            service.description = description
+        if kinds is not None:
+            service.kinds = _parse_kinds(kinds) or [firewall_kinds.FirewallKindAny()]
+
+        service.save(session=session)
+
+        CONSOLE.print(f"Service {service.name} ({service.uuid}) updated")
+        CONSOLE.print(f"Subnets: {', '.join(str(i) for i in service.subnets)}")
+        CONSOLE.print(f"Tags: {', '.join(service.tags) or '(none)'}")
+        if service.description:
+            CONSOLE.print(f"Description: {service.description}")
+        kinds_display = ", ".join(k.to_str() for k in service.kinds) if service.kinds else "-"
+        CONSOLE.print(f"Kinds: {kinds_display}")
+
+
+@cli.command("service-add-subnet")
+@click.argument("uuid")
+@click.argument("subnets")
+@click.pass_context
+def service_add_subnet(ctx, uuid, subnets):
+    """Add subnets to a service."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        filters = {"uuid": dm_filters.EQ(uuid)}
+        service = models.Service.objects.get_one(session=session, filters=filters)
+
+        new_subnets = [
+            netaddr.IPNetwork(s.strip()) for s in subnets.split(",") if s.strip()
+        ]
+        existing = list(service.subnets or [])
+        added = [s for s in new_subnets if s not in existing]
+        service.subnets = existing + added
+        service.save(session=session)
+
+        CONSOLE.print(
+            f"Service {service.name} ({service.uuid}) "
+            f"subnets added: {', '.join(str(s) for s in added)}"
+        )
+        CONSOLE.print(f"Current subnets: {', '.join(str(i) for i in service.subnets)}")
+
+
+@cli.command("service-remove-subnet")
+@click.argument("uuid")
+@click.argument("subnets")
+@click.pass_context
+def service_remove_subnet(ctx, uuid, subnets):
+    """Remove subnets from a service."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        filters = {"uuid": dm_filters.EQ(uuid)}
+        service = models.Service.objects.get_one(session=session, filters=filters)
+
+        remove_subnets = {
+            netaddr.IPNetwork(s.strip()) for s in subnets.split(",") if s.strip()
+        }
+        existing = list(service.subnets or [])
+        service.subnets = [s for s in existing if s not in remove_subnets]
+        service.save(session=session)
+
+        CONSOLE.print(
+            f"Service {service.name} ({service.uuid}) "
+            f"subnets removed: {', '.join(str(s) for s in remove_subnets)}"
+        )
+        CONSOLE.print(f"Current subnets: {', '.join(str(i) for i in service.subnets)}")
+
+
+@cli.command("service-add-tag")
+@click.argument("uuid")
+@click.argument("tags")
+@click.pass_context
+def service_add_tag(ctx, uuid, tags):
+    """Add tags to a service."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        filters = {"uuid": dm_filters.EQ(uuid)}
+        service = models.Service.objects.get_one(session=session, filters=filters)
+
+        new_tags = [t.strip() for t in tags.split(",") if t.strip()]
+        existing = list(service.tags or [])
+        added = [t for t in new_tags if t not in existing]
+        service.tags = existing + added
+        service.save(session=session)
+
+        CONSOLE.print(
+            f"Service {service.name} ({service.uuid}) "
+            f"tags added: {', '.join(added)}"
+        )
+        CONSOLE.print(f"Current tags: {', '.join(service.tags)}")
+
+
+@cli.command("service-remove-tag")
+@click.argument("uuid")
+@click.argument("tags")
+@click.pass_context
+def service_remove_tag(ctx, uuid, tags):
+    """Remove tags from a service."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        filters = {"uuid": dm_filters.EQ(uuid)}
+        service = models.Service.objects.get_one(session=session, filters=filters)
+
+        remove_tags = [t.strip() for t in tags.split(",") if t.strip()]
+        existing = list(service.tags or [])
+        service.tags = [t for t in existing if t not in remove_tags]
+        service.save(session=session)
+
+        CONSOLE.print(
+            f"Service {service.name} ({service.uuid}) "
+            f"tags removed: {', '.join(remove_tags)}"
+        )
+        CONSOLE.print(f"Current tags: {', '.join(service.tags)}")
+
+
+@cli.command("service-add-kind")
+@click.argument("uuid")
+@click.argument("kinds")
+@click.pass_context
+def service_add_kind(ctx, uuid, kinds):
+    """Add firewall kinds to a service."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        filters = {"uuid": dm_filters.EQ(uuid)}
+        service = models.Service.objects.get_one(session=session, filters=filters)
+
+        new_kinds = _parse_kinds(kinds)
+        existing = list(service.kinds or [])
+        added = [k for k in new_kinds if k not in existing]
+        service.kinds = existing + added
+        service.save(session=session)
+
+        CONSOLE.print(
+            f"Service {service.name} ({service.uuid}) "
+            f"kinds added: {', '.join(k.to_str() for k in added)}"
+        )
+        kinds_display = ", ".join(k.to_str() for k in service.kinds)
+        CONSOLE.print(f"Current kinds: {kinds_display}")
+
+
+@cli.command("service-remove-kind")
+@click.argument("uuid")
+@click.argument("kinds")
+@click.pass_context
+def service_remove_kind(ctx, uuid, kinds):
+    """Remove firewall kinds from a service."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        filters = {"uuid": dm_filters.EQ(uuid)}
+        service = models.Service.objects.get_one(session=session, filters=filters)
+
+        remove_kinds = _parse_kinds(kinds)
+        existing = list(service.kinds or [])
+        service.kinds = [k for k in existing if k not in remove_kinds]
+        service.save(session=session)
+
+        CONSOLE.print(
+            f"Service {service.name} ({service.uuid}) "
+            f"kinds removed: {', '.join(k.to_str() for k in remove_kinds)}"
+        )
+        kinds_display = ", ".join(k.to_str() for k in service.kinds) if service.kinds else "-"
+        CONSOLE.print(f"Current kinds: {kinds_display}")
 
 
 @cli.command("service-delete")

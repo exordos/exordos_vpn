@@ -48,76 +48,60 @@ Global options:
 --format [table|json] Output format [default: table]
 ```
 
-### Account Management
+### Account
 
-```bash
-# Create new account with auto-generated PIN and OTP
-$ exordos-vpn-cli account-create user1 --name mobile
+| Command | Description |
+|---|---|
+| `account-create <user_id> [--name NAME] [--pin-length N] [--disable-pbin]` | Create account (auto PIN + OTP, cert if configured) |
+| `account-list [--user-id UID]` | List accounts |
+| `account-disable <account>` | Disable account |
+| `account-generate-config <account> [--otp-uuid UUID] [--disable-pbin]` | Generate .ovpn config |
+| `account-reset <account> [--pin-length N] [--disable-pbin]` | Reset PIN and OTP (with confirmation) |
+| `account-set-otp <account> [--otp-uuid UUID]` | Replace OTP device for account |
 
-# List accounts (filter by user_id)
-$ exordos-vpn-cli account-list --user-id user1
+### Network Access
 
-# List accounts in JSON format
-$ exordos-vpn-cli --format json account-list
+| Command | Description |
+|---|---|
+| `account-network-show <account>` | Show network access rules |
+| `account-network-reset <account> [--access-type TYPE] [--tags TAGS]` | Full overwrite access type and tags |
+| `account-network-add-tag <account> <tags>` | Add network access tags |
+| `account-network-remove-tag <account> <tags>` | Remove network access tags |
 
-# Disable account
-$ exordos-vpn-cli account-disable <account-uuid-or-name>
+### OTP
 
-# Generate OpenVPN config for account
-$ exordos-vpn-cli account-generate-config <account-uuid-or-name> --otp-uuid <otp-uuid>
+One OTP device is shared across all accounts of the same `user_id`.
 
-# Reset PIN and OTP (with confirmation prompt)
-$ exordos-vpn-cli account-reset <account-uuid-or-name>
-```
+| Command | Description |
+|---|---|
+| `otp-add <user_id> [--name NAME]` | Add OTP device for user (links to all active accounts) |
+| `otp-list <user_id>` | List OTP devices for user (with linked accounts) |
+| `otp-remove <uuid>` | Disable OTP device |
 
-### Network Access Control
+### Service
 
-```bash
-# Show current network access rules
-$ exordos-vpn-cli account-network-show <account-uuid-or-name>
+| Command | Description |
+|---|---|
+| `service-create <name> --subnets SUBNETS [--tags TAGS] [--desc TEXT] [--kinds KINDS]` | Create service |
+| `service-list` | List services |
+| `service-reset <uuid> [--name NAME] [--subnets SUBNETS] [--tags TAGS] [--desc TEXT] [--kinds KINDS]` | Overwrite service fields |
+| `service-add-subnet <uuid> <subnets>` | Add subnets |
+| `service-remove-subnet <uuid> <subnets>` | Remove subnets |
+| `service-add-tag <uuid> <tags>` | Add tags |
+| `service-remove-tag <uuid> <tags>` | Remove tags |
+| `service-add-kind <uuid> <kinds>` | Add firewall kinds |
+| `service-remove-kind <uuid> <kinds>` | Remove firewall kinds |
+| `service-delete <uuid>` | Delete service |
 
-# Reset network access type and tags (full overwrite)
-$ exordos-vpn-cli account-network-reset <account-uuid-or-name> \
-    --access-type RESTRICTED --tags "finance,engineering"
+### Configuration
 
-# Add tags to existing access rules
-$ exordos-vpn-cli account-network-add-tag <account-uuid-or-name> finance,engineering
+Key config options (in `[common]` section):
 
-# Remove tags from access rules
-$ exordos-vpn-cli account-network-remove-tag <account-uuid-or-name> finance
-```
-
-### OTP (Two-Factor Authentication)
-
-```bash
-# Add new OTP device
-$ exordos-vpn-cli otp-add <account-uuid-or-name> --name "Phone"
-
-# List OTP devices
-$ exordos-vpn-cli otp-list <account-uuid-or-name>
-
-# Remove (disable) OTP device
-$ exordos-vpn-cli otp-remove <device-uuid>
-```
-
-### Service Management
-
-```bash
-# Create new service
-$ exordos-vpn-cli service-create myservice \
-    --subnets "10.0.0.0/8,172.16.0.0/12" \
-    --tags "finance,engineering" \
-    --kinds "any,tcp:80-443,udp:53"
-
-# List services
-$ exordos-vpn-cli service-list
-
-# List services in JSON format
-$ exordos-vpn-cli --format json service-list
-
-# Delete service
-$ exordos-vpn-cli service-delete <service-uuid>
-```
+| Option | Default | Description |
+|---|---|---|
+| `show-credentials` | `false` | Print PIN/OTP to console; when disabled, credentials go to PrivateBin only |
+| `generate-certs` | `true` | Auto-generate certificates for new accounts |
+| `privatebin-endpoint` | `""` | PrivateBin URL for sending credentials |
 
 ## Services
 
