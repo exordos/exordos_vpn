@@ -98,8 +98,8 @@ service_config_opts = [
     cfg.StrOpt(
         "credentials-template",
         required=True,
-        default="credentials_en.txt.j2",
-        help="Path to the credentials text template file",
+        default="credentials_en.md.j2",
+        help="Path to the credentials markdown template file",
     ),
     cfg.IntOpt(
         "new-cert-validity-days",

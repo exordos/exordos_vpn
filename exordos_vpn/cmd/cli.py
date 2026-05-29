@@ -14,12 +14,13 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import io
+import base64
 import json
 import os
 import secrets
 import string
 import uuid
+from io import BytesIO
 
 import click
 import jinja2
@@ -108,19 +109,25 @@ def _generate_pin(length=6):
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
-def _build_credentials_text(account_name, pin, otp_uri=None):
-    """Build credentials text for the user."""
-    qr_text = ""
+def _generate_qr_base64(data):
+    """Generate a QR code image and return it as a base64-encoded PNG string."""
+    qr = qrcode.QRCode(
+        error_correction=qrcode.constants.ERROR_CORRECT_L,
+    )
+    qr.add_data(data)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buffered = BytesIO()
+    img.save(buffered, format="PNG")
+    img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
+    return img_str
+
+
+def _build_credentials_text(account_name, pin, otp_uri=None, otp_secret=None):
+    """Build credentials markdown text for the user."""
+    qr_base64 = ""
     if otp_uri:
-        # Generate QR code as ASCII text for inclusion in the message
-        qr = qrcode.QRCode(
-            error_correction=qrcode.constants.ERROR_CORRECT_L,
-        )
-        qr.add_data(otp_uri)
-        qr.make(fit=True)
-        buf = io.StringIO()
-        qr.print_ascii(out=buf)
-        qr_text = buf.getvalue()
+        qr_base64 = _generate_qr_base64(otp_uri)
 
     template_name = CONF[c.COMMON_DOMAIN].credentials_template
     template_file = os.path.join(_CONFIG_DIR, template_name)
@@ -129,8 +136,9 @@ def _build_credentials_text(account_name, pin, otp_uri=None):
     return template.render(
         account_name=account_name,
         pin=pin,
-        qr_text=qr_text,
+        qr_base64=qr_base64,
         otp_uri=otp_uri or "",
+        otp_secret=otp_secret or "",
     )
 
 
@@ -227,14 +235,7 @@ def _pbin_send(disable_pbin, text, config_file=None):
     try:
         if not disable_pbin and CONF[c.COMMON_DOMAIN].get("privatebin_endpoint"):
             endpoint = CONF[c.COMMON_DOMAIN].privatebin_endpoint
-            if config_file:
-                dl_link = privatebin.send_file(
-                    endpoint,
-                    text=text,
-                    file=config_file,
-                )
-            else:
-                dl_link = privatebin.send_text(endpoint, text=text)
+            dl_link = privatebin.send(endpoint, text=text, file=config_file)
             CONSOLE.print(
                 f"One-time download link, lasts 1 week: {dl_link['full_url']}"
             )
@@ -381,6 +382,7 @@ def account_create(ctx, user_id, name, pin_length, access_type, tags, disable_pb
         device, otp_created = _resolve_otp_device(session, account)
 
         otp_uri = None
+        otp_secret = None
         if otp_created:
             otp_secret = device.get_decrypted_secret()
             otp_uri = pyotp.TOTP(otp_secret).provisioning_uri(
@@ -418,7 +420,7 @@ def account_create(ctx, user_id, name, pin_length, access_type, tags, disable_pb
         )
 
         credentials_text = _build_credentials_text(
-            account.account_name, pin, otp_uri=otp_uri,
+            account.account_name, pin, otp_uri=otp_uri, otp_secret=otp_secret,
         )
         _pbin_send(disable_pbin, text=credentials_text, config_file=config_file)
 
@@ -823,7 +825,8 @@ def account_reset(ctx, account, pin_length, disable_pbin):
         credentials_text = _build_credentials_text(
             acc.account_name,
             new_pin,
-            otp_uri,
+            otp_uri=otp_uri,
+            otp_secret=new_secret,
         )
         _pbin_send(disable_pbin, text=credentials_text, config_file=config_file)
 
