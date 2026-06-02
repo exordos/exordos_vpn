@@ -52,12 +52,22 @@ Global options:
 
 | Command | Description |
 |---|---|
-| `account-create <user_id> [--name NAME] [--pin-length N] [--access-type ALL\|RESTRICTED] [--tags TAGS] [--disable-pbin]` | Create account with PIN, OTP, cert (if configured), and network access rules |
+| `account-create <user_id> [--name NAME] [--pin-length N] [--access-type ALL\|RESTRICTED] [--tags TAGS] [--network NAME\|UUID] [--disable-pbin]` | Create account with PIN, OTP, cert (if configured), and network access rules |
 | `account-list [--user-id UID]` | List accounts |
 | `account-disable <account>` | Disable account |
 | `account-generate-config <account> [--otp-uuid UUID] [--disable-pbin]` | Generate .ovpn config |
 | `account-reset <account> [--pin-length N] [--disable-pbin]` | Reset PIN and OTP (with confirmation) |
 | `account-set-otp <account> [--otp-uuid UUID]` | Replace OTP device for account |
+
+### Network
+
+| Command | Description |
+|---|---|
+| `network-create <name> --subnets SUBNETS [--description TEXT]` | Create a named VPN network (subnet pool) |
+| `network-list` | List all VPN networks |
+| `network-add-subnet <network> <subnets>` | Add subnets to a network (name or UUID) |
+| `network-remove-subnet <network> <subnets>` | Remove subnets from a network |
+| `network-delete <network>` | Delete a network (only if no accounts assigned) |
 
 ### Network Access
 
@@ -82,9 +92,9 @@ One OTP device is shared across all accounts of the same `user_id`.
 
 | Command | Description |
 |---|---|
-| `service-create <name> --subnets SUBNETS [--tags TAGS] [--desc TEXT] [--kinds KINDS]` | Create service |
+| `service-create <name> --subnets SUBNETS [--tags TAGS] [--description TEXT] [--kinds KINDS]` | Create service |
 | `service-list` | List services |
-| `service-reset <uuid> [--name NAME] [--subnets SUBNETS] [--tags TAGS] [--desc TEXT] [--kinds KINDS]` | Overwrite service fields |
+| `service-reset <uuid> [--name NAME] [--subnets SUBNETS] [--tags TAGS] [--description TEXT] [--kinds KINDS]` | Overwrite service fields |
 | `service-add-subnet <uuid> <subnets>` | Add subnets |
 | `service-remove-subnet <uuid> <subnets>` | Remove subnets |
 | `service-add-tag <uuid> <tags>` | Add tags |

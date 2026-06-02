@@ -73,6 +73,31 @@ def _print_output(ctx, columns, rows):
         CONSOLE.print(table)
 
 
+def _resolve_network(session, identifier):
+    """Resolve a network by UUID or name."""
+    try:
+        uuid.UUID(identifier)
+        is_uuid = True
+    except ValueError:
+        is_uuid = False
+
+    if is_uuid:
+        res = models.Network.objects.get_one_or_none(
+            session=session, filters={"uuid": dm_filters.EQ(identifier)}
+        )
+        if res:
+            return res
+
+    res = models.Network.objects.get_one_or_none(
+        session=session, filters={"name": dm_filters.EQ(identifier)}
+    )
+    if res:
+        return res
+
+    CONSOLE.print(f"[red]Network not found: {identifier}[/red]")
+    raise SystemExit(1)
+
+
 def _resolve_account(session, identifier):
     """Resolve an account by UUID or account_name.
 
@@ -332,13 +357,21 @@ def cli(ctx, config_file, config_dir, output_format):
     help="Network access type (set during creation)",
 )
 @click.option("--tags", default="", help="Comma-separated tags for RESTRICTED access")
+@click.option(
+    "--network",
+    "network_name",
+    default="default",
+    show_default=True,
+    help="Network name or UUID to assign this account to",
+)
 @click.option("--disable-pbin", is_flag=True, default=False)
 @click.pass_context
-def account_create(ctx, user_id, name, pin_length, access_type, tags, disable_pbin):
+def account_create(ctx, user_id, name, pin_length, access_type, tags, network_name, disable_pbin):
     """Create a new account."""
     _ensure_config(ctx)
     session_ctx = ctx.obj["session_ctx"]
     with session_ctx.session_manager() as session:
+        network = _resolve_network(session, network_name)
         pin = _generate_pin(length=pin_length)
         generate_certs = CONF[c.COMMON_DOMAIN].generate_certs
         auth_type = "cert_and_password" if generate_certs else "password_only"
@@ -349,6 +382,7 @@ def account_create(ctx, user_id, name, pin_length, access_type, tags, disable_pb
         kwargs["pin_length"] = pin_length
         kwargs["auth_type"] = auth_type
         kwargs["account_name"] = name or user_id
+        kwargs["network"] = network
 
         if not kwargs["account_name"].startswith(user_id):
             kwargs["account_name"] = f"{user_id}_{kwargs['account_name']}"
@@ -392,6 +426,7 @@ def account_create(ctx, user_id, name, pin_length, access_type, tags, disable_pb
 
         CONSOLE.print(f"Account created with uuid: {account.uuid}")
         CONSOLE.print(f"Account name: {account.account_name}")
+        CONSOLE.print(f"Network: {network.name}")
         CONSOLE.print(f"Auth type: {account.auth_type}")
         CONSOLE.print()
         _secure_print("[bold]Login:[/bold] " + account.account_name)
@@ -439,7 +474,7 @@ def account_list(ctx, user_id):
         accounts = models.Account.objects.get_all(session=session, filters=filters)
         columns = [
             "uuid", "user_id", "account_name", "auth_type", "status",
-            "network_access_type", "tags", "updated_at",
+            "network", "network_access_type", "tags", "updated_at",
         ]
         rows = [
             (
@@ -448,6 +483,7 @@ def account_list(ctx, user_id):
                 a.account_name,
                 a.auth_type,
                 a.status,
+                a.network.name,
                 a.network_access_type or "-",
                 ", ".join(a.network_access_tags) if a.network_access_tags else "-",
                 a.updated_at.isoformat() if a.updated_at else "-",
@@ -799,7 +835,7 @@ def account_reset(ctx, account, pin_length, disable_pbin):
         if not click.confirm("Proceed with reset?"):
             raise SystemExit(0)
 
-        # Reset PIN
+        # Reset PIN and clear auth cache so old cached credentials can't be replayed.
         new_pin = _generate_pin(length=pin_length)
         new_salt = dm_models._generate_salt()
         global_salt = CONF[c.COMMON_DOMAIN].global_salt
@@ -807,6 +843,12 @@ def account_reset(ctx, account, pin_length, disable_pbin):
         acc.pin_hash = dm_models._generate_pin_hash(new_pin, new_salt, global_salt)
         acc.pin_length = pin_length
         acc.save(session=session)
+
+        auth_cache = dm_models.AccountAuthCache.objects.get_one_or_none(
+            session=session, filters={"account": dm_filters.EQ(acc)}
+        )
+        if auth_cache:
+            auth_cache.delete(session=session)
 
         # Reset OTP: find or create a device
         device, otp_created = _resolve_otp_device(session, acc)
@@ -841,6 +883,135 @@ def account_reset(ctx, account, pin_length, disable_pbin):
             otp_secret=new_secret,
         )
         _pbin_send(disable_pbin, text=credentials_text, config_file=config_file)
+
+
+# --- Network commands ---
+
+
+@cli.command("network-create")
+@click.argument("name", type=str.lower)
+@click.option(
+    "--subnets",
+    required=True,
+    help="Comma-separated list of subnets (e.g. 10.8.0.0/24,10.9.0.0/24)",
+)
+@click.option("--description", default="", help="Network description")
+@click.pass_context
+def network_create(ctx, name, subnets, description):
+    """Create a new named VPN network (subnet pool)."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        subnet_list = [
+            netaddr.IPNetwork(s.strip()) for s in subnets.split(",") if s.strip()
+        ]
+        network = models.Network(
+            name=name,
+            subnets=subnet_list,
+            description=description,
+        )
+        try:
+            network.save(session=session)
+        except ra_exceptions.ConflictRecords:
+            CONSOLE.print(f"[red]Error: Network '{name}' already exists.[/red]")
+            raise SystemExit(1)
+
+        CONSOLE.print(f"Network created: {network.uuid}")
+        CONSOLE.print(f"Name: {network.name}")
+        CONSOLE.print(f"Subnets: {', '.join(str(s) for s in subnet_list)}")
+        if description:
+            CONSOLE.print(f"Description: {description}")
+
+
+@cli.command("network-list")
+@click.pass_context
+def network_list(ctx):
+    """List all VPN networks."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        networks = models.Network.objects.get_all(session=session)
+        columns = ["uuid", "name", "subnets", "description"]
+        rows = [
+            (
+                str(n.uuid),
+                n.name,
+                ", ".join(str(s) for s in n.subnets),
+                n.description or "-",
+            )
+            for n in networks
+        ]
+        _print_output(ctx, columns, rows)
+
+
+@cli.command("network-add-subnet")
+@click.argument("network")
+@click.argument("subnets")
+@click.pass_context
+def network_add_subnet(ctx, network, subnets):
+    """Add subnets to a network."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        net = _resolve_network(session, network)
+        new_subnets = [
+            netaddr.IPNetwork(s.strip()) for s in subnets.split(",") if s.strip()
+        ]
+        existing = list(net.subnets or [])
+        added = [s for s in new_subnets if s not in existing]
+        net.subnets = existing + added
+        net.save(session=session)
+
+        CONSOLE.print(
+            f"Network {net.name} ({net.uuid}) subnets added: "
+            f"{', '.join(str(s) for s in added)}"
+        )
+        CONSOLE.print(f"Current subnets: {', '.join(str(s) for s in net.subnets)}")
+
+
+@cli.command("network-remove-subnet")
+@click.argument("network")
+@click.argument("subnets")
+@click.pass_context
+def network_remove_subnet(ctx, network, subnets):
+    """Remove subnets from a network."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        net = _resolve_network(session, network)
+        remove = {
+            netaddr.IPNetwork(s.strip()) for s in subnets.split(",") if s.strip()
+        }
+        net.subnets = [s for s in net.subnets if netaddr.IPNetwork(str(s)) not in remove]
+        net.save(session=session)
+
+        CONSOLE.print(
+            f"Network {net.name} ({net.uuid}) subnets removed: "
+            f"{', '.join(str(s) for s in remove)}"
+        )
+        CONSOLE.print(f"Current subnets: {', '.join(str(s) for s in net.subnets)}")
+
+
+@cli.command("network-delete")
+@click.argument("network")
+@click.pass_context
+def network_delete(ctx, network):
+    """Delete a network (only if no accounts are assigned to it)."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        net = _resolve_network(session, network)
+        count = models.Account.objects.count(
+            session=session, filters={"network": dm_filters.EQ(net)}
+        )
+        if count > 0:
+            CONSOLE.print(
+                f"[red]Cannot delete network '{net.name}': "
+                f"{count} account(s) still assigned.[/red]"
+            )
+            raise SystemExit(1)
+        net.delete(session=session)
+        CONSOLE.print(f"Network {net.name} ({net.uuid}) deleted")
 
 
 # --- Service commands ---

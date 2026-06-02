@@ -65,6 +65,18 @@ class ServiceRoute(routes.Route):
     ]
 
 
+class NetworkRoute(routes.Route):
+    """Handler for /networks/ endpoint."""
+
+    __controller__ = controllers.NetworkController
+    __allow_methods__ = [
+        routes.FILTER,
+        routes.CREATE,
+        routes.GET,
+        routes.UPDATE,
+    ]
+
+
 class ApiEndpointRoute(routes.Route):
     """Handler for /v1/ endpoint."""
 
@@ -77,3 +89,4 @@ class ApiEndpointRoute(routes.Route):
     addresses_per_user = routes.route(AddressesPerUserRoute)
     auth = routes.route(AuthRoute)
     services = routes.route(ServiceRoute)
+    networks = routes.route(NetworkRoute)
