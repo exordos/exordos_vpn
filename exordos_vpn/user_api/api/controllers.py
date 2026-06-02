@@ -18,10 +18,8 @@ import collections
 import logging
 import urllib.parse
 
-import netaddr
 import pyotp
 from gcl_iam import controllers as iam_controllers
-from oslo_config import cfg
 from restalchemy.api import actions
 from restalchemy.api import controllers as ra_controllers
 from restalchemy.api import constants
@@ -31,15 +29,12 @@ from restalchemy.api import resources
 from restalchemy.common import exceptions as ra_exceptions
 from restalchemy.dm import filters as dm_filters
 
-from exordos_vpn.common import constants as c
 from exordos_vpn.common import ovpn_config
 from exordos_vpn.dm import models
 from exordos_vpn.dm import models as vpn_models
 from exordos_vpn.user_api.api import versions
 
 LOG = logging.getLogger(__name__)
-
-CONF = cfg.CONF
 
 
 class RootController(ra_controllers.Controller):
@@ -106,13 +101,11 @@ class AddressesPerUserController(iam_controllers.PolicyBasedWithoutProjectContro
             filt["user_id"] = dm_filters.EQ(filters["user_id"])
         accounts = models.Account.objects.get_all(filters=filt)
         res = collections.defaultdict(list)
-        subnets = []
-        for subnet in CONF[c.COMMON_DOMAIN].server_subnets:
-            subnets.append(netaddr.IPNetwork(subnet).network)
         for account in accounts:
-            for subnet in subnets:
-                if account.address_offset:
-                    res[account.user_id].append(str(subnet + account.address_offset))
+            if not account.address_offset:
+                continue
+            client_ip, _ = account.network.ip_for_offset(account.address_offset)
+            res[account.user_id].append(client_ip)
 
         return res
 
@@ -186,6 +179,21 @@ class ServiceController(
     )
 
 
+class NetworkController(
+    iam_controllers.PolicyBasedWithoutProjectController,
+    ra_controllers.BaseResourceControllerPaginated,
+):
+    """Controller for /networks/ endpoint."""
+
+    __policy_service_name__ = "vpn"
+    __policy_name__ = "networks"
+
+    __resource__ = resources.ResourceByRAModel(
+        models.Network,
+        convert_underscore=False,
+    )
+
+
 class AuthVerifyError(ra_exceptions.RestAlchemyException):
     message = "Authentication failed"
     code = 403
@@ -242,6 +250,16 @@ class AuthController(ra_controllers.Controller):
             )
             raise AuthVerifyError()
 
+        # Allow reconnect within 1 hour with the same credentials (e.g. after device sleep).
+        if account.check_auth_cache(password):
+            account.update_auth_cache(password)
+            LOG.info(
+                "IAM AUDIT: login succeeded (cached) account_name=%s ip=%s",
+                account_name,
+                ctx.get_user_ip(),
+            )
+            return {"status": "ok"}, 200, None, False
+
         # Verify OTP against all active devices
         account_otp_devices = vpn_models.AccountOtpDevice.objects.get_all(
             filters={
@@ -284,6 +302,7 @@ class AuthController(ra_controllers.Controller):
             )
             raise AuthVerifyError()
 
+        account.update_auth_cache(password)
         LOG.info(
             "IAM AUDIT: login succeeded account_name=%s ip=%s",
             account_name,

@@ -15,11 +15,14 @@
 #    under the License.
 
 import base64
+import datetime
 import decimal
 import hashlib
+import hmac as hmac_lib
 import secrets
 import uuid
 
+import netaddr
 from oslo_config import cfg
 from restalchemy.common import contexts
 from restalchemy.common import exceptions as ra_exceptions
@@ -32,7 +35,6 @@ from restalchemy.dm import types_network
 from restalchemy.storage.sql import orm
 
 from exordos_vpn.common import cert
-from exordos_vpn.common import config
 from exordos_vpn.common import constants as c
 from exordos_vpn.common import crypto
 from exordos_vpn.common import firewall_kinds
@@ -49,6 +51,44 @@ class CommonModel(
     pass
 
 
+class Network(CommonModel, models.ModelWithNameDesc):
+    __tablename__ = "networks"
+
+    subnets = properties.property(
+        types.TypedList(types_network.IpWithMask()),
+        required=True,
+    )
+
+    def max_offset(self):
+        """Return the max usable address offset across all subnets in this network."""
+        if not self.subnets:
+            raise ValueError(f"Network '{self.name}' has no subnets configured")
+        total_capacity = sum(
+            max(netaddr.IPNetwork(str(s)).size - 3, 0) for s in self.subnets
+        )
+        return total_capacity + 1
+
+    def ip_for_offset(self, offset):
+        """Resolve a sequential address offset to (ip_str, netmask_str) from this network's subnets.
+
+        Offsets start at 2 (offset 1 is the VPN server address in each subnet).
+        Subnets are filled in order; each contributes size-3 client slots
+        (positions 2..size-2, excluding network address, server, and broadcast).
+        """
+        if not self.subnets:
+            raise ValueError(f"Network '{self.name}' has no subnets configured")
+        remaining = offset - 2
+        for subnet_str in self.subnets:
+            subnet = netaddr.IPNetwork(str(subnet_str))
+            capacity = max(subnet.size - 3, 0)
+            if remaining < capacity:
+                return str(subnet.network + remaining + 2), str(subnet.netmask)
+            remaining -= capacity
+        raise ValueError(
+            f"Offset {offset} exceeds total capacity of network '{self.name}'"
+        )
+
+
 MIN_PIN_LENGTH = 6
 
 
@@ -60,6 +100,16 @@ class InvalidPinError(ra_exceptions.RestAlchemyException):
 def _generate_salt(length=18):
     """Generate a random base64 salt."""
     return base64.b64encode(secrets.token_bytes(length)).decode("utf-8")
+
+
+def _hash_auth_token(account_name, password, global_salt):
+    """HMAC-SHA256 of (account_name:password) keyed with the global salt."""
+    raw_salt = base64.b64decode(global_salt)
+    return hmac_lib.new(
+        raw_salt,
+        f"{account_name}:{password}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def _generate_pin_hash(pin, pin_salt, global_salt):
@@ -81,6 +131,7 @@ class Account(CommonModel):
 
     user_id = properties.property(types.String(), required=True)
     account_name = properties.property(types.String(), required=True)
+    network = relationships.relationship(Network, required=True)
     auth_type = properties.property(
         types.Enum(("password_only", "cert_and_password")),
         default="password_only",
@@ -104,18 +155,19 @@ class Account(CommonModel):
     )
 
     @classmethod
-    def allocate_address_offset(cls, session=None):
+    def allocate_address_offset(cls, network, session=None):
         session = session or contexts.Context().get_session()
 
-        # 1 is reserved for server!
+        max_offset = network.max_offset()
+        # offset 1 is reserved for the server
         res = session.execute(
             """\
 SELECT s.i AS unused_number
 FROM generate_series(2, %s) s(i)
-LEFT OUTER JOIN accounts a ON a.address_offset = s.i
+LEFT OUTER JOIN accounts a ON a.address_offset = s.i AND a.network = %s
 WHERE a.address_offset IS null
 limit 1;""",
-            (config.get_minimal_subnet_size(),),
+            (max_offset, str(network.uuid)),
         ).fetchall()
         if len(res) > 0:
             return int(res[0]["unused_number"])
@@ -135,7 +187,7 @@ limit 1;""",
         pin_hash = _generate_pin_hash(pin, pin_salt, global_salt)
 
         if not address_offset:
-            address_offset = self.allocate_address_offset()
+            address_offset = self.allocate_address_offset(kwargs["network"])
 
         super().__init__(
             account_name=account_name,
@@ -151,6 +203,48 @@ limit 1;""",
         expected = _generate_pin_hash(pin, self.pin_salt, global_salt)
         return expected == self.pin_hash
 
+    def check_auth_cache(self, password):
+        """Return True if password matches a non-expired cached auth token."""
+        if CONF[c.COMMON_DOMAIN].auth_cache_ttl_hours == 0:
+            return False
+        cache = AccountAuthCache.objects.get_one_or_none(
+            filters={"account": dm_filters.EQ(self)},
+        )
+        if not cache or not cache.auth_cache_hash or not cache.auth_cache_expires_at:
+            return False
+        now = datetime.datetime.now(datetime.timezone.utc)
+        if cache.auth_cache_expires_at <= now:
+            return False
+        global_salt = CONF[c.COMMON_DOMAIN].global_salt
+        candidate = _hash_auth_token(self.account_name, password, global_salt)
+        return hmac_lib.compare_digest(candidate, cache.auth_cache_hash)
+
+    def update_auth_cache(self, password, session=None):
+        """Refresh the cached auth token (sliding window, TTL from config)."""
+        ttl_hours = CONF[c.COMMON_DOMAIN].auth_cache_ttl_hours
+        if ttl_hours == 0:
+            return
+        global_salt = CONF[c.COMMON_DOMAIN].global_salt
+        new_hash = _hash_auth_token(self.account_name, password, global_salt)
+        new_expires_at = (
+            datetime.datetime.now(datetime.timezone.utc)
+            + datetime.timedelta(hours=ttl_hours)
+        )
+        cache = AccountAuthCache.objects.get_one_or_none(
+            filters={"account": dm_filters.EQ(self)},
+            session=session,
+        )
+        if cache is not None:
+            cache.auth_cache_hash = new_hash
+            cache.auth_cache_expires_at = new_expires_at
+            cache.save(session=session)
+        else:
+            AccountAuthCache(
+                account=self,
+                auth_cache_hash=new_hash,
+                auth_cache_expires_at=new_expires_at,
+            ).save(session=session)
+
     def get_otp_devices(self, session=None):
         """Get all OTP devices for this account."""
         session = session or contexts.Context().get_session()
@@ -163,6 +257,16 @@ limit 1;""",
     def disable(self, session=None):
         self.status = "DISABLED"
         self.save(session=session)
+
+
+class AccountAuthCache(models.ModelWithUUID, orm.SQLStorableMixin):
+    """Auth cache for reconnects — separate table so updates don't touch accounts.updated_at."""
+
+    __tablename__ = "account_auth_cache"
+
+    account = relationships.relationship(Account, required=True)
+    auth_cache_hash = properties.property(types.AllowNone(types.String()))
+    auth_cache_expires_at = properties.property(types.AllowNone(types.UTCDateTimeZ()))
 
 
 class Service(CommonModel, models.ModelWithNameDesc):

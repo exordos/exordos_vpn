@@ -14,10 +14,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from functools import cache
 import logging
 
-import netaddr
 from oslo_config import cfg
 
 from exordos_vpn.common import constants
@@ -111,12 +109,6 @@ service_config_opts = [
         default=["server"],
         help="List of reserved common names for server certificates",
     ),
-    cfg.ListOpt(
-        "server-subnets",
-        required=True,
-        help="List of subnets that the openvpn servers will use. "
-        "Used for API info only.",
-    ),
     cfg.StrOpt(
         "privatebin-endpoint",
         default="",
@@ -152,6 +144,13 @@ service_config_opts = [
         help="Whether to print sensitive credentials (PIN, OTP secret, QR code) "
         "to the console. When disabled, credentials are only sent to PrivateBin.",
     ),
+    cfg.IntOpt(
+        "auth-cache-ttl-hours",
+        default=1,
+        help="How many hours a successful PIN+OTP login is cached, allowing "
+        "reconnects (e.g. after device sleep) without re-entering OTP. "
+        "Set to 0 to disable caching.",
+    ),
 ]
 
 
@@ -168,14 +167,3 @@ def register_service_config_opts_file_only():
     cfg.CONF.register_opts(service_config_opts, constants.COMMON_DOMAIN)
 
 
-@cache
-def get_minimal_subnet_size():
-    return max(
-        min(
-            [
-                netaddr.IPNetwork(s).size - 2
-                for s in cfg.CONF[constants.COMMON_DOMAIN].server_subnets
-            ]
-        ),
-        0,
-    )

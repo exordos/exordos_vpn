@@ -83,7 +83,11 @@ def _build_chain_rules(
     for account in accounts:
         if account.status == "DISABLED" or not account.address_offset:
             continue
-        client_ip = str(vpn_subnet.network + account.address_offset)
+        try:
+            client_ip, _ = account.network.ip_for_offset(account.address_offset)
+        except ValueError:
+            LOG.warning("Cannot resolve IP for account %r, skipping firewall rules", account.account_name)
+            continue
         if account.network_access_type == "ALL":
             accept_rules.add(f"-A {chain_name} -s {client_ip} -j ACCEPT")
         else:
@@ -225,7 +229,10 @@ class AgentService(basic.BasicService):
 
         # Remove stale chains first
         for chain_name in managed_chains - desired_names:
-            self._remove_chain(chain_name)
+            try:
+                self._remove_chain(chain_name)
+            except RuntimeError:
+                LOG.warning('Chain is still used, will try in next iteration...', exc_info=True)
 
         # Create/reconcile each desired chain
         for chain_name in desired_names:
@@ -412,7 +419,7 @@ class AgentService(basic.BasicService):
             )
 
     def process_instance(self, name, conf, accounts):
-        cidr = netaddr.IPNetwork(conf.openvpn_subnet_cidr)
+        instance_subnet = netaddr.IPNetwork(conf.openvpn_subnet_cidr)
         dir = conf.openvpn_config_dir
         ccd_dir = os.path.join(dir, f"ccd_{name}" if name else "ccd")
         if not os.path.exists(ccd_dir):
@@ -421,17 +428,20 @@ class AgentService(basic.BasicService):
             LOG.info(f"({name})Processing account: {account.account_name}")
             ccd_file_path = os.path.join(ccd_dir, account.account_name)
             with open(ccd_file_path, "w") as f:
-                # If the account is disabled, disable the client in CCD.
                 if account.status == "DISABLED":
                     f.write("disable\n")
-                    # Disabled account don't need any other settings
                     continue
 
-                # permanent IP address assignment based on the
-                # account's address offset.
-                if account.address_offset:
-                    f.write(
-                        f"ifconfig-push "
-                        f"{cidr.network + account.address_offset} "
-                        f"{cidr.netmask}\n"
-                    )
+                if not account.address_offset:
+                    LOG.warning("Ignore active account without address_offset: %r", account.account_name)
+                    f.write("disable\n")
+                    continue
+
+                try:
+                    client_ip, _ = account.network.ip_for_offset(account.address_offset)
+                except ValueError as e:
+                    LOG.warning("Cannot resolve IP for account %r: %s", account.account_name, e)
+                    f.write("disable\n")
+                    continue
+
+                f.write(f"ifconfig-push {client_ip} {instance_subnet.netmask}\n")
