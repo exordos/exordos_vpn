@@ -114,6 +114,11 @@ service_config_opts = [
         default="",
         help="Privatebin endpoint to paste config to. Can be disabled with --disable-pbin.",
     ),
+    cfg.ListOpt(
+        "pbin-additional-files",
+        default=[],
+        help="List of file paths to always attach to every PrivateBin paste.",
+    ),
     cfg.StrOpt(
         "global-salt",
         required=True,
