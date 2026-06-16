@@ -226,6 +226,16 @@ class AuthController(ra_controllers.Controller):
             )
             raise AuthVerifyError()
 
+        # Allow reconnect within 1 hour with the same credentials (e.g. after device sleep).
+        if account.check_auth_cache(password):
+            account.update_auth_cache(password)
+            LOG.info(
+                "IAM AUDIT: login succeeded (cached) account_name=%s ip=%s",
+                account_name,
+                ctx.get_user_ip(),
+            )
+            return {"status": "ok"}, 200, None, False
+
         # Split password: first pin_length chars = PIN, rest = OTP
         pin_length = account.pin_length
         if len(password) < pin_length + 6:
@@ -249,16 +259,6 @@ class AuthController(ra_controllers.Controller):
                 "wrong_pin",
             )
             raise AuthVerifyError()
-
-        # Allow reconnect within 1 hour with the same credentials (e.g. after device sleep).
-        if account.check_auth_cache(password):
-            account.update_auth_cache(password)
-            LOG.info(
-                "IAM AUDIT: login succeeded (cached) account_name=%s ip=%s",
-                account_name,
-                ctx.get_user_ip(),
-            )
-            return {"status": "ok"}, 200, None, False
 
         # Verify OTP against all active devices
         account_otp_devices = vpn_models.AccountOtpDevice.objects.get_all(
