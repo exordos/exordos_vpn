@@ -260,9 +260,20 @@ def _pbin_send(disable_pbin, text, config_file=None):
     try:
         if not disable_pbin and CONF[c.COMMON_DOMAIN].get("privatebin_endpoint"):
             endpoint = CONF[c.COMMON_DOMAIN].privatebin_endpoint
-            dl_link = privatebin.send(endpoint, text=text, file=config_file)
+            files = []
+            for path in ([config_file] if config_file else []) + list(
+                CONF[c.COMMON_DOMAIN].pbin_additional_files or []
+            ):
+                with open(path, "rb") as f:
+                    files.append((os.path.basename(path), f.read()))
+            dl_link = privatebin.create_paste(
+                endpoint,
+                text=text,
+                files=files or None,
+                burn=True,
+            )
             CONSOLE.print(
-                f"One-time download link, lasts 1 week: {dl_link['full_url']}"
+                f"One-time download link, lasts 1 week: {dl_link['url']}"
             )
     except Exception as e:
         print(f"Upload to pbin failed, feel free to retry, error: {e}")
