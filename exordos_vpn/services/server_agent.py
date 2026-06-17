@@ -35,6 +35,11 @@ IPTABLES_BIN_PATH = "/usr/sbin/iptables"
 FIREWALL_TABLE = "filter"
 
 
+def _host_cidr(ip):
+    """Return a host IP in /32 CIDR notation as iptables normalizes it."""
+    return f"{ip}/32"
+
+
 def _build_kind_rules(chain_name, client_ip, subnet, kind):
     """Build iptables ACCEPT rule for a single kind.
 
@@ -44,8 +49,9 @@ def _build_kind_rules(chain_name, client_ip, subnet, kind):
     Returns:
         set of rule strings (may contain multiple rules for port ranges)
     """
+    src = _host_cidr(client_ip)
     if kind.KIND == "any":
-        return {f"-A {chain_name} -s {client_ip} -d {subnet} -j ACCEPT"}
+        return {f"-A {chain_name} -s {src} -d {subnet} -j ACCEPT"}
 
     protocol = kind.KIND
     min_port = kind.min_port
@@ -53,15 +59,15 @@ def _build_kind_rules(chain_name, client_ip, subnet, kind):
     rules = set()
 
     if min_port == 1 and max_port == 65535:
-        rules.add(f"-A {chain_name} -s {client_ip} -d {subnet} -p {protocol} -j ACCEPT")
+        rules.add(f"-A {chain_name} -s {src} -d {subnet} -p {protocol} -j ACCEPT")
     elif min_port == max_port:
         rules.add(
-            f"-A {chain_name} -s {client_ip} -d {subnet} "
+            f"-A {chain_name} -s {src} -d {subnet} "
             f"-p {protocol} --dport {min_port} -j ACCEPT"
         )
     else:
         rules.add(
-            f"-A {chain_name} -s {client_ip} -d {subnet} "
+            f"-A {chain_name} -s {src} -d {subnet} "
             f"-p {protocol} --dport {min_port}:{max_port} -j ACCEPT"
         )
     return rules
@@ -78,7 +84,9 @@ def _build_chain_rules(
     accept_rules = set()
 
     # Allow VPN client to reach VPN server (essential for management)
-    accept_rules.add(f"-A {chain_name} -s {vpn_subnet} -d {vpn_server_ip} -j ACCEPT")
+    accept_rules.add(
+        f"-A {chain_name} -s {vpn_subnet} -d {_host_cidr(vpn_server_ip)} -j ACCEPT"
+    )
 
     for account in accounts:
         if account.status == "DISABLED" or not account.address_offset:
@@ -88,8 +96,9 @@ def _build_chain_rules(
         except ValueError:
             LOG.warning("Cannot resolve IP for account %r, skipping firewall rules", account.account_name)
             continue
+        src = _host_cidr(client_ip)
         if account.network_access_type == "ALL":
-            accept_rules.add(f"-A {chain_name} -s {client_ip} -j ACCEPT")
+            accept_rules.add(f"-A {chain_name} -s {src} -j ACCEPT")
         else:
             account_tags = set(account.network_access_tags or [])
             for service in services:
@@ -99,7 +108,7 @@ def _build_chain_rules(
                     if not service_kinds:
                         for subnet in service.subnets:
                             accept_rules.add(
-                                f"-A {chain_name} -s {client_ip} -d {subnet} -j ACCEPT"
+                                f"-A {chain_name} -s {src} -d {subnet} -j ACCEPT"
                             )
                     else:
                         for subnet in service.subnets:
