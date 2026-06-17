@@ -50,7 +50,7 @@ mkdir -p $GC_CFG_DIR
 cp "$GC_PATH/etc/exordos_vpn/exordos_vpn.conf" $GC_CFG_DIR/
 cp "$GC_PATH/etc/exordos_vpn/logging.yaml" $GC_CFG_DIR/
 cp "$GC_PATH/etc/exordos_vpn/client_config.j2" $GC_CFG_DIR/
-cp "$GC_PATH/etc/exordos_vpn/credentials.txt.j2" $GC_CFG_DIR/
+cp $GC_PATH/etc/exordos_vpn/credentials_*.md.j2 $GC_CFG_DIR/
 
 uv sync
 source "$GC_PATH/.venv/bin/activate"
