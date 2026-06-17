@@ -167,7 +167,7 @@ def _build_credentials_text(account_name, pin, otp_uri=None, otp_secret=None):
     )
 
 
-def _resolve_otp_device(session, account, otp_uuid=None):
+def _resolve_otp_device(session, account, otp_uuid=None, with_disabled=False):
     """Resolve which OTP device to use for an account.
 
     One OTP device is shared across all accounts of the same user_id.
@@ -195,6 +195,8 @@ def _resolve_otp_device(session, account, otp_uuid=None):
 
     # Search OTP devices by user_id (shared across all user's accounts)
     filters = {"user_id": dm_filters.EQ(account.user_id)}
+    if not with_disabled:
+        filters["status"] = dm_filters.EQ("ACTIVE")
     devices = models.OtpDevice.objects.get_all(session=session, filters=filters)
 
     if len(devices) == 0:
@@ -687,8 +689,9 @@ def account_remove_network_tag(ctx, account, tags):
 @cli.command("otp-add")
 @click.argument("user_id")
 @click.option("--name", default="Default", help="Device name")
+@click.option("--disable-pbin", is_flag=True, default=False)
 @click.pass_context
-def otp_add(ctx, user_id, name):
+def otp_add(ctx, user_id, name, disable_pbin):
     """Add an OTP device to a user."""
     _ensure_config(ctx)
     session_ctx = ctx.obj["session_ctx"]
@@ -729,6 +732,10 @@ def otp_add(ctx, user_id, name):
         _secure_print("[bold]OTP QR Code:[/bold]")
         _print_otp_qrcode(uri)
         CONSOLE.print("Scan the QR code with your authenticator app.")
+
+        qr_base64 = _generate_qr_base64(uri)
+        pbin_text = f"# Your OTP\n\n![QR](data:image/png;base64,{qr_base64})"
+        _pbin_send(disable_pbin, text=pbin_text)
 
 
 @cli.command("otp-list")
@@ -825,9 +832,14 @@ def account_set_otp(ctx, account, otp_uuid):
 @click.option(
     "--pin-length", type=int, default=6, help="PIN length (min 6, auto-generated)"
 )
+@click.option(
+    "--otp-uuid",
+    default=None,
+    help="OTP device uuid (required if account has multiple OTP devices)",
+)
 @click.option("--disable-pbin", is_flag=True, default=False)
 @click.pass_context
-def account_reset(ctx, account, pin_length, disable_pbin):
+def account_reset(ctx, account, pin_length, otp_uuid, disable_pbin):
     """Reset PIN and OTP secret for an account."""
     from exordos_vpn.common import crypto
     from exordos_vpn.dm import models as dm_models
@@ -862,7 +874,7 @@ def account_reset(ctx, account, pin_length, disable_pbin):
             auth_cache.delete(session=session)
 
         # Reset OTP: find or create a device
-        device, otp_created = _resolve_otp_device(session, acc)
+        device, otp_created = _resolve_otp_device(session, acc, otp_uuid=otp_uuid)
         new_secret = pyotp.random_base32()
         device.otp_secret = crypto.encrypt_otp_secret(new_secret)
         device.save(session=session)
