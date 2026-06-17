@@ -63,12 +63,12 @@ def _build_kind_rules(chain_name, client_ip, subnet, kind):
     elif min_port == max_port:
         rules.add(
             f"-A {chain_name} -s {src} -d {subnet} "
-            f"-p {protocol} --dport {min_port} -j ACCEPT"
+            f"-p {protocol} -m {protocol} --dport {min_port} -j ACCEPT"
         )
     else:
         rules.add(
             f"-A {chain_name} -s {src} -d {subnet} "
-            f"-p {protocol} --dport {min_port}:{max_port} -j ACCEPT"
+            f"-p {protocol} -m {protocol} --dport {min_port}:{max_port} -j ACCEPT"
         )
     return rules
 
@@ -207,7 +207,7 @@ class AgentService(basic.BasicService):
                 continue
             vpn_subnet_raw = conf.openvpn_subnet_cidr
             vpn_ip_part = vpn_subnet_raw.split("/")[0]
-            vpn_subnet = netaddr.IPNetwork(vpn_subnet_raw)
+            vpn_subnet = netaddr.IPNetwork(vpn_subnet_raw).cidr
             fw_whitelist_raw = getattr(conf, "firewall_global_whitelist", "")
             firewall_whitelist = []
             if fw_whitelist_raw:
@@ -236,13 +236,6 @@ class AgentService(basic.BasicService):
         managed_chains = self._list_managed_chains(chain_prefixes)
         desired_names = set(desired_chains)
 
-        # Remove stale chains first
-        for chain_name in managed_chains - desired_names:
-            try:
-                self._remove_chain(chain_name)
-            except RuntimeError:
-                LOG.warning('Chain is still used, will try in next iteration...', exc_info=True)
-
         # Create/reconcile each desired chain
         for chain_name in desired_names:
             if chain_name not in managed_chains:
@@ -263,6 +256,14 @@ class AgentService(basic.BasicService):
                     "-j",
                     chain_name,
                 )
+
+        # Remove stale chains
+        for chain_name in managed_chains - desired_names:
+            try:
+                self._remove_chain(chain_name)
+            except RuntimeError:
+                LOG.warning('Chain is still used, will try in next iteration...', exc_info=True)
+
 
     def _list_managed_chains(self, chain_prefixes):
         """List existing iptables chains matching our prefix(es).
@@ -346,33 +347,29 @@ class AgentService(basic.BasicService):
 
     def _remove_chain(self, chain_name):
         """Remove a chain: flush rules, delete FORWARD refs, delete chain."""
-        # Flush all rules in the chain
         self._run_iptables("-t", FIREWALL_TABLE, "-F", chain_name)
-        # Remove all FORWARD references to this chain
-        while True:
-            result = subprocess.run(
-                [
-                    IPTABLES_BIN_PATH,
-                    "-t",
-                    FIREWALL_TABLE,
-                    "-D",
-                    "FORWARD",
-                    "-j",
-                    chain_name,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode != 0:
-                break
-        # Delete the chain
-        self._run_iptables(
-            "-t",
-            FIREWALL_TABLE,
-            "-X",
-            chain_name,
+        self._remove_forward_refs(chain_name)
+        self._run_iptables("-t", FIREWALL_TABLE, "-X", chain_name)
+
+    def _remove_forward_refs(self, chain_name):
+        """Delete all FORWARD rules that jump to chain_name.
+
+        Reads the full rule spec via -S so each deletion includes all
+        match criteria (e.g. -s subnet) that iptables requires for an
+        exact match.
+        """
+        result = subprocess.run(
+            [IPTABLES_BIN_PATH, "-t", FIREWALL_TABLE, "-S", "FORWARD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
+        if result.returncode != 0:
+            return
+        for line in result.stdout.splitlines():
+            if line.startswith("-A FORWARD ") and line.endswith(f"-j {chain_name}"):
+                parts = line.split()
+                self._run_iptables("-t", FIREWALL_TABLE, "-D", "FORWARD", *parts[2:])
 
     def _reconcile_chain(self, chain_name, desired):
         """Reconcile a single chain against desired rules.
@@ -420,6 +417,7 @@ class AgentService(basic.BasicService):
             text=True,
             timeout=10,
         )
+        LOG.debug("_run_iptables: %r", args)
         if result.returncode != 0:
             raise RuntimeError(
                 f"Iptables failed: {' '.join(args)}\n"
@@ -434,7 +432,7 @@ class AgentService(basic.BasicService):
         if not os.path.exists(ccd_dir):
             os.makedirs(ccd_dir)
         for account in accounts:
-            LOG.info(f"({name})Processing account: {account.account_name}")
+            LOG.info("(%s)Processing account: %s", name, account.account_name)
             ccd_file_path = os.path.join(ccd_dir, account.account_name)
             with open(ccd_file_path, "w") as f:
                 if account.status == "DISABLED":
