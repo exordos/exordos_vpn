@@ -908,6 +908,43 @@ def account_reset(ctx, account, pin_length, otp_uuid, disable_pbin):
         _pbin_send(disable_pbin, text=credentials_text, config_file=config_file)
 
 
+@cli.command("account-reset-pin")
+@click.argument("account")
+@click.option(
+    "--pin-length", type=int, default=6, help="PIN length (min 6, auto-generated)"
+)
+@click.option("--disable-pbin", is_flag=True, default=False)
+@click.pass_context
+def account_reset_pin(ctx, account, pin_length, disable_pbin):
+    """Reset only the PIN for an account."""
+    from exordos_vpn.dm import models as dm_models
+
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        acc = _resolve_account(session, account)
+
+        new_pin = _generate_pin(length=pin_length)
+        new_salt = dm_models._generate_salt()
+        global_salt = CONF[c.COMMON_DOMAIN].global_salt
+        acc.pin_salt = new_salt
+        acc.pin_hash = dm_models._generate_pin_hash(new_pin, new_salt, global_salt)
+        acc.pin_length = pin_length
+        acc.save(session=session)
+
+        auth_cache = dm_models.AccountAuthCache.objects.get_one_or_none(
+            session=session, filters={"account": dm_filters.EQ(acc)}
+        )
+        if auth_cache:
+            auth_cache.delete(session=session)
+
+        CONSOLE.print(f"Account {acc.uuid} ({acc.account_name}) PIN reset")
+        _secure_print(f"[bold]New PIN:[/bold] {new_pin}", style="bold yellow")
+
+        pbin_text = f"New pin for {acc.account_name}: `{new_pin}`"
+        _pbin_send(disable_pbin, text=pbin_text)
+
+
 # --- Network commands ---
 
 

@@ -56,8 +56,11 @@ Global options:
 | `account-list [--user-id UID]` | List accounts |
 | `account-disable <account>` | Disable account |
 | `account-generate-config <account> [--otp-uuid UUID] [--disable-pbin]` | Generate .ovpn config |
-| `account-reset <account> [--pin-length N] [--disable-pbin]` | Reset PIN and OTP (with confirmation) |
+| `account-reset <account> [--pin-length N] [--otp-uuid UUID] [--disable-pbin]` | Reset PIN and OTP (with confirmation) |
+| `account-reset-pin <account> [--pin-length N] [--disable-pbin]` | Reset PIN only, sends new PIN to PrivateBin |
 | `account-set-otp <account> [--otp-uuid UUID]` | Replace OTP device for account |
+
+> **`account-create` defaults to `--access-type RESTRICTED`** — new accounts can only reach services matching their tags. Use `--access-type ALL` to grant unrestricted network access.
 
 ### Network
 
@@ -84,7 +87,7 @@ One OTP device is shared across all accounts of the same `user_id`.
 
 | Command | Description |
 |---|---|
-| `otp-add <user_id> [--name NAME]` | Add OTP device for user (links to all active accounts) |
+| `otp-add <user_id> [--name NAME] [--disable-pbin]` | Add OTP device for user (links to all active accounts) |
 | `otp-list <user_id>` | List OTP devices for user (with linked accounts) |
 | `otp-remove <uuid>` | Disable OTP device |
 
@@ -111,7 +114,9 @@ Commands marked with 📋 send credentials to PrivateBin (if `privatebin-endpoin
 |---|---|
 | 📋 `account-create` | Credentials text (login, PIN, OTP QR/URI if new) + .ovpn config file |
 | 📋 `account-reset` | Credentials text (login, new PIN, new OTP QR/URI) + .ovpn config file |
+| 📋 `account-reset-pin` | `New pin for <account_name>: <pin>` |
 | 📋 `account-generate-config` | .ovpn config file |
+| 📋 `otp-add` | OTP QR code (PNG embedded in markdown) |
 
 When `show-credentials=false` (default), sensitive data (PIN, OTP secret, QR code) is **not** printed to the console — only sent via PrivateBin link.
 
