@@ -32,8 +32,8 @@ class _MultiFilePaste(Paste):
         self._attachment_name = []
 
     def addAttachment(self, name, data):
-        from mimetypes import guess_type
         from base64 import b64encode
+        from mimetypes import guess_type
 
         mime = guess_type(name, strict=False)[0] or "application/octet-stream"
         self._attachment.append("data:" + mime + ";base64," + b64encode(data).decode())

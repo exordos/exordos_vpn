@@ -39,7 +39,6 @@ from exordos_vpn.common import constants as c
 from exordos_vpn.common import crypto
 from exordos_vpn.common import firewall_kinds
 
-
 CONF = cfg.CONF
 
 
@@ -226,10 +225,9 @@ limit 1;""",
             return
         global_salt = CONF[c.COMMON_DOMAIN].global_salt
         new_hash = _hash_auth_token(self.account_name, password, global_salt)
-        new_expires_at = (
-            datetime.datetime.now(datetime.timezone.utc)
-            + datetime.timedelta(hours=ttl_hours)
-        )
+        new_expires_at = datetime.datetime.now(
+            datetime.timezone.utc
+        ) + datetime.timedelta(hours=ttl_hours)
         cache = AccountAuthCache.objects.get_one_or_none(
             filters={"account": dm_filters.EQ(self)},
             session=session,
