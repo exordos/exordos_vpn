@@ -20,7 +20,6 @@ import logging
 from gcl_looper.services import basic
 from restalchemy.common import contexts
 
-
 LOG = logging.getLogger(__name__)
 
 

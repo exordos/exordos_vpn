@@ -47,11 +47,11 @@ class MigrationStep(migrations.AbstarctMigrationStep):
             );
             """
         )
-        session.execute(
-            "CREATE INDEX idx_networks_updated_at ON networks(updated_at);"
-        )
+        session.execute("CREATE INDEX idx_networks_updated_at ON networks(updated_at);")
 
-        LOG.warn("If you had any data - don't forget to set subnets for DEFAULT network!")
+        LOG.warn(
+            "If you had any data - don't forget to set subnets for DEFAULT network!"
+        )
 
         default_uuid = str(uuid.uuid4())
         session.execute(
@@ -69,9 +69,7 @@ class MigrationStep(migrations.AbstarctMigrationStep):
         session.execute('UPDATE "accounts" SET "network" = %s', (default_uuid,))
 
         # Make non-nullable now that all rows are filled.
-        session.execute(
-            'ALTER TABLE "accounts" ALTER COLUMN "network" SET NOT NULL;'
-        )
+        session.execute('ALTER TABLE "accounts" ALTER COLUMN "network" SET NOT NULL;')
 
         # Drop old single-column unique constraint on address_offset.
         session.execute(

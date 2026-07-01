@@ -18,9 +18,8 @@ import logging
 
 from oslo_config import cfg
 
-from exordos_vpn.common import constants
 from exordos_vpn import version
-
+from exordos_vpn.common import constants
 
 GLOBAL_SERVICE_NAME = constants.GLOBAL_SERVICE_NAME
 
@@ -170,5 +169,3 @@ def register_service_config_opts_file_only():
     (e.g. click) and oslo_config should only parse the config file.
     """
     cfg.CONF.register_opts(service_config_opts, constants.COMMON_DOMAIN)
-
-

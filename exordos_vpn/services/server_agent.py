@@ -19,14 +19,13 @@ import logging
 import os
 import subprocess
 
-import netaddr
 from gcl_looper.services import basic
+import netaddr
 from restalchemy.common import contexts
 from restalchemy.dm import filters as dm_filters
 from restalchemy.dm import types
 
 from exordos_vpn.dm import models
-
 
 LOG = logging.getLogger(__name__)
 
@@ -94,7 +93,10 @@ def _build_chain_rules(
         try:
             client_ip, _ = account.network.ip_for_offset(account.address_offset)
         except ValueError:
-            LOG.warning("Cannot resolve IP for account %r, skipping firewall rules", account.account_name)
+            LOG.warning(
+                "Cannot resolve IP for account %r, skipping firewall rules",
+                account.account_name,
+            )
             continue
         src = _host_cidr(client_ip)
         if account.network_access_type == "ALL":
@@ -262,8 +264,9 @@ class AgentService(basic.BasicService):
             try:
                 self._remove_chain(chain_name)
             except RuntimeError:
-                LOG.warning('Chain is still used, will try in next iteration...', exc_info=True)
-
+                LOG.warning(
+                    "Chain is still used, will try in next iteration...", exc_info=True
+                )
 
     def _list_managed_chains(self, chain_prefixes):
         """List existing iptables chains matching our prefix(es).
@@ -440,14 +443,19 @@ class AgentService(basic.BasicService):
                     continue
 
                 if not account.address_offset:
-                    LOG.warning("Ignore active account without address_offset: %r", account.account_name)
+                    LOG.warning(
+                        "Ignore active account without address_offset: %r",
+                        account.account_name,
+                    )
                     f.write("disable\n")
                     continue
 
                 try:
                     client_ip, _ = account.network.ip_for_offset(account.address_offset)
                 except ValueError as e:
-                    LOG.warning("Cannot resolve IP for account %r: %s", account.account_name, e)
+                    LOG.warning(
+                        "Cannot resolve IP for account %r: %s", account.account_name, e
+                    )
                     f.write("disable\n")
                     continue
 

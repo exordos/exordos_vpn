@@ -17,11 +17,9 @@
 import functools
 
 import jinja2
-
 from oslo_config import cfg
 
 from exordos_vpn.common import constants
-
 
 CONF = cfg.CONF
 

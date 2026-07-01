@@ -18,8 +18,8 @@ import base64
 import select
 import subprocess
 
-import pytest
 from oslo_config import cfg
+import pytest
 
 from exordos_vpn.common import config as vpn_config
 from exordos_vpn.common import constants as c

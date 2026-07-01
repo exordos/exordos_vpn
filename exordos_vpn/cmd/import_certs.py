@@ -25,14 +25,13 @@ import sys
 
 from oslo_config import cfg
 from restalchemy.common import config_opts as ra_config_opts
-from restalchemy.storage.sql import engines
 from restalchemy.common import contexts
+from restalchemy.storage.sql import engines
 
 from exordos_vpn.common import cert
 from exordos_vpn.common import config
 from exordos_vpn.common import log as infra_log
 from exordos_vpn.dm import models
-
 
 cli_opts = [
     cfg.StrOpt("easyrsa-dir", help="Path to easyrsa dir to import from", required=True),

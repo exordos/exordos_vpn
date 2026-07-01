@@ -15,20 +15,19 @@
 #    under the License.
 
 import base64
+from io import BytesIO
 import json
 import os
 import secrets
 import string
 import uuid
-from io import BytesIO
 
 import click
 import jinja2
-
 import netaddr
+from oslo_config import cfg
 import pyotp
 import qrcode
-from oslo_config import cfg
 from restalchemy.common import config_opts as ra_config_opts
 from restalchemy.common import contexts
 from restalchemy.dm import filters as dm_filters
@@ -44,7 +43,6 @@ from exordos_vpn.common import log as infra_log
 from exordos_vpn.common import ovpn_config
 from exordos_vpn.common import privatebin
 from exordos_vpn.dm import models
-
 
 CONSOLE = Console()
 CONF = cfg.CONF
@@ -186,7 +184,8 @@ def _resolve_otp_device(session, account, otp_uuid=None, with_disabled=False):
             "account": dm_filters.EQ(account),
         }
         existing = models.AccountOtpDevice.objects.get_all(
-            session=session, filters=link_filters,
+            session=session,
+            filters=link_filters,
         )
         if not existing:
             rel = models.AccountOtpDevice(account=account, otp_device=device)
@@ -219,7 +218,8 @@ def _resolve_otp_device(session, account, otp_uuid=None, with_disabled=False):
             "account": dm_filters.EQ(account),
         }
         existing = models.AccountOtpDevice.objects.get_all(
-            session=session, filters=link_filters,
+            session=session,
+            filters=link_filters,
         )
         if not existing:
             rel = models.AccountOtpDevice(account=account, otp_device=device)
@@ -274,9 +274,7 @@ def _pbin_send(disable_pbin, text, config_file=None):
                 files=files or None,
                 burn=True,
             )
-            CONSOLE.print(
-                f"One-time download link, lasts 1 week: {dl_link['url']}"
-            )
+            CONSOLE.print(f"One-time download link, lasts 1 week: {dl_link['url']}")
     except Exception as e:
         print(f"Upload to pbin failed, feel free to retry, error: {e}")
 
@@ -379,7 +377,9 @@ def cli(ctx, config_file, config_dir, output_format):
 )
 @click.option("--disable-pbin", is_flag=True, default=False)
 @click.pass_context
-def account_create(ctx, user_id, name, pin_length, access_type, tags, network_name, disable_pbin):
+def account_create(
+    ctx, user_id, name, pin_length, access_type, tags, network_name, disable_pbin
+):
     """Create a new account."""
     _ensure_config(ctx)
     session_ctx = ctx.obj["session_ctx"]
@@ -468,7 +468,10 @@ def account_create(ctx, user_id, name, pin_length, access_type, tags, network_na
         )
 
         credentials_text = _build_credentials_text(
-            account.account_name, pin, otp_uri=otp_uri, otp_secret=otp_secret,
+            account.account_name,
+            pin,
+            otp_uri=otp_uri,
+            otp_secret=otp_secret,
         )
         _pbin_send(disable_pbin, text=credentials_text, config_file=config_file)
 
@@ -486,8 +489,15 @@ def account_list(ctx, user_id):
             filters["user_id"] = dm_filters.EQ(user_id)
         accounts = models.Account.objects.get_all(session=session, filters=filters)
         columns = [
-            "uuid", "user_id", "account_name", "auth_type", "status",
-            "network", "network_access_type", "tags", "updated_at",
+            "uuid",
+            "user_id",
+            "account_name",
+            "auth_type",
+            "status",
+            "network",
+            "network_access_type",
+            "tags",
+            "updated_at",
         ]
         rows = [
             (
@@ -716,7 +726,8 @@ def otp_add(ctx, user_id, name, disable_pbin):
                 "account": dm_filters.EQ(acc),
             }
             existing = models.AccountOtpDevice.objects.get_all(
-                session=session, filters=link_filters,
+                session=session,
+                filters=link_filters,
             )
             if not existing:
                 rel = models.AccountOtpDevice(account=acc, otp_device=device)
@@ -753,18 +764,19 @@ def otp_list(ctx, user_id):
         for d in devices:
             link_filters = {"otp_device": dm_filters.EQ(d)}
             rels = models.AccountOtpDevice.objects.get_all(
-                session=session, filters=link_filters,
+                session=session,
+                filters=link_filters,
             )
-            account_names = ", ".join(
-                r.account.account_name for r in rels
+            account_names = ", ".join(r.account.account_name for r in rels)
+            rows.append(
+                (
+                    str(d.uuid),
+                    d.name,
+                    d.otp_type,
+                    d.status,
+                    account_names,
+                )
             )
-            rows.append((
-                str(d.uuid),
-                d.name,
-                d.otp_type,
-                d.status,
-                account_names,
-            ))
         _print_output(ctx, columns, rows)
 
 
@@ -801,14 +813,17 @@ def account_set_otp(ctx, account, otp_uuid):
         # Remove existing OTP device links for this account
         link_filters = {"account": dm_filters.EQ(acc)}
         old_rels = models.AccountOtpDevice.objects.get_all(
-            session=session, filters=link_filters,
+            session=session,
+            filters=link_filters,
         )
         for rel in old_rels:
             rel.delete(session=session)
 
         # Resolve the new OTP device
         device, otp_created = _resolve_otp_device(
-            session, acc, otp_uuid=otp_uuid,
+            session,
+            acc,
+            otp_uuid=otp_uuid,
         )
 
         if otp_created:
@@ -1002,10 +1017,10 @@ def network_remove_subnet(ctx, network, subnets):
     session_ctx = ctx.obj["session_ctx"]
     with session_ctx.session_manager() as session:
         net = _resolve_network(session, network)
-        remove = {
-            netaddr.IPNetwork(s.strip()) for s in subnets.split(",") if s.strip()
-        }
-        net.subnets = [s for s in net.subnets if netaddr.IPNetwork(str(s)) not in remove]
+        remove = {netaddr.IPNetwork(s.strip()) for s in subnets.split(",") if s.strip()}
+        net.subnets = [
+            s for s in net.subnets if netaddr.IPNetwork(str(s)) not in remove
+        ]
         net.save(session=session)
 
         CONSOLE.print(
@@ -1126,9 +1141,7 @@ def service_list(ctx):
     default=None,
     help="Comma-separated list of subnets (full overwrite)",
 )
-@click.option(
-    "--tags", default=None, help="Comma-separated tags (full overwrite)"
-)
+@click.option("--tags", default=None, help="Comma-separated tags (full overwrite)")
 @click.option("--description", default=None, help="Service description")
 @click.option(
     "--kinds",
@@ -1166,7 +1179,9 @@ def service_reset(ctx, uuid, name, subnets, tags, description, kinds):
         CONSOLE.print(f"Tags: {', '.join(service.tags) or '(none)'}")
         if service.description:
             CONSOLE.print(f"Description: {service.description}")
-        kinds_display = ", ".join(k.to_str() for k in service.kinds) if service.kinds else "-"
+        kinds_display = (
+            ", ".join(k.to_str() for k in service.kinds) if service.kinds else "-"
+        )
         CONSOLE.print(f"Kinds: {kinds_display}")
 
 
@@ -1242,8 +1257,7 @@ def service_add_tag(ctx, uuid, tags):
         service.save(session=session)
 
         CONSOLE.print(
-            f"Service {service.name} ({service.uuid}) "
-            f"tags added: {', '.join(added)}"
+            f"Service {service.name} ({service.uuid}) tags added: {', '.join(added)}"
         )
         CONSOLE.print(f"Current tags: {', '.join(service.tags)}")
 
@@ -1319,7 +1333,9 @@ def service_remove_kind(ctx, uuid, kinds):
             f"Service {service.name} ({service.uuid}) "
             f"kinds removed: {', '.join(k.to_str() for k in remove_kinds)}"
         )
-        kinds_display = ", ".join(k.to_str() for k in service.kinds) if service.kinds else "-"
+        kinds_display = (
+            ", ".join(k.to_str() for k in service.kinds) if service.kinds else "-"
+        )
         CONSOLE.print(f"Current kinds: {kinds_display}")
 
 
