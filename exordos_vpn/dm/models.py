@@ -225,9 +225,10 @@ limit 1;""",
             return
         global_salt = CONF[c.COMMON_DOMAIN].global_salt
         new_hash = _hash_auth_token(self.account_name, password, global_salt)
+        # add 30 seconds for clients such as pritunl (reneg-sec drift)
         new_expires_at = datetime.datetime.now(
             datetime.timezone.utc
-        ) + datetime.timedelta(hours=ttl_hours)
+        ) + datetime.timedelta(hours=ttl_hours, seconds=30)
         cache = AccountAuthCache.objects.get_one_or_none(
             filters={"account": dm_filters.EQ(self)},
             session=session,
