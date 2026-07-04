@@ -52,7 +52,7 @@ Global options:
 
 | Command | Description |
 |---|---|
-| `account-create <user_id> [--name NAME] [--pin-length N] [--access-type ALL\|RESTRICTED] [--tags TAGS] [--network NAME\|UUID] [--disable-pbin] [--no-otp]` | Create account with PIN, OTP, cert (if configured), and network access rules |
+| `account-create <user_id> [--name NAME] [--pin-length N] [--access-type ALL\|RESTRICTED] [--tags TAGS] [--departments DEPTS] [--network NAME\|UUID] [--disable-pbin] [--no-otp]` | Create account with PIN, OTP, cert (if configured), and network access rules |
 | `account-list [--user-id UID]` | List accounts |
 | `account-disable <account>` | Disable account |
 | `account-generate-config <account> [--otp-uuid UUID] [--disable-pbin]` | Generate .ovpn config |
@@ -74,10 +74,34 @@ Global options:
 
 | Command | Description |
 |---|---|
-| `account-network-show <account>` | Show network access rules |
+| `account-network-show <account>` | Show network access rules (own tags, departments, effective tags) |
 | `account-network-reset <account> [--access-type TYPE] [--tags TAGS]` | Full overwrite access type and tags |
 | `account-network-add-tag <account> <tags>` | Add network access tags |
 | `account-network-remove-tag <account> <tags>` | Remove network access tags |
+
+### Departments
+
+Org-structure tree for granting access per department instead of per account. A department carries `network_access_tags`; member accounts get those tags — plus the tags of all ancestor departments — merged into their own for Service matching. Everything else (Service tags, firewall, routing, CCD pushes) works exactly as with account-level tags. `network_access_type` (ALL/RESTRICTED) stays per-account; personal account tags remain as an additive exception mechanism.
+
+| Command | Description |
+|---|---|
+| `department-create <name> [--parent P] [--tags TAGS] [--description TEXT]` | Create department |
+| `department-list` | List departments with own and effective (inherited) tags |
+| `department-set-parent <department> <parent>` | Move under another parent (`""` makes it a root; cycles are refused) |
+| `department-add-tag <department> <tags>` | Add network access tags |
+| `department-remove-tag <department> <tags>` | Remove network access tags |
+| `department-delete <department>` | Delete (refused while it has children or members) |
+| `account-department-add <account> <departments>` | Add account to departments |
+| `account-department-remove <account> <departments>` | Remove account from departments |
+
+Example:
+
+```bash
+exordos-vpn-cli department-create org --tags vpn-basic
+exordos-vpn-cli department-create engineering --parent org --tags git
+exordos-vpn-cli account-create alice --departments engineering
+# alice now matches services tagged vpn-basic or git
+```
 
 ### OTP
 

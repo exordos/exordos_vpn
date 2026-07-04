@@ -88,8 +88,24 @@ def _build_kind_rules(chain_name, client_ip, dst_clause, kind):
     return rules
 
 
+def _account_tags(account, dept_granted):
+    """Effective access tags of an account: its own plus the tags granted
+    via department membership (dept_granted comes from
+    models.department_granted_tags, keyed by account UUID)."""
+    tags = set(account.network_access_tags or [])
+    if dept_granted:
+        tags |= dept_granted.get(account.uuid, set())
+    return tags
+
+
 def _build_chain_rules(
-    chain_name, vpn_subnet, vpn_server_ip, firewall_whitelist, accounts, services
+    chain_name,
+    vpn_subnet,
+    vpn_server_ip,
+    firewall_whitelist,
+    accounts,
+    services,
+    dept_granted=None,
 ):
     """Build desired ACCEPT and DROP rules for a chain.
 
@@ -118,7 +134,7 @@ def _build_chain_rules(
         if account.network_access_type == "ALL":
             accept_rules.add(f"-A {chain_name} -s {src} -j ACCEPT")
         else:
-            account_tags = set(account.network_access_tags or [])
+            account_tags = _account_tags(account, dept_granted)
             for service in services:
                 service_tags = set(service.tags or [])
                 if not (account_tags & service_tags):
@@ -252,22 +268,24 @@ def _build_desired_routes(services, resolved_domains):
     return desired
 
 
-def _account_matched_services(account, services):
+def _account_matched_services(account, services, dept_granted=None):
     """Services this account may reach.
 
     Mirrors the same matching _build_chain_rules uses for the firewall
     ACCEPT rules, so a route is only ever pushed for a destination the
     firewall would actually let through: "ALL" accounts get a blanket
     ACCEPT there, so they match every service; RESTRICTED accounts match
-    by tag intersection.
+    by tag intersection (own tags plus department-granted ones).
     """
     if account.network_access_type == "ALL":
         return list(services)
-    account_tags = set(account.network_access_tags or [])
+    account_tags = _account_tags(account, dept_granted)
     return [s for s in services if account_tags & set(s.tags or [])]
 
 
-def _build_ccd_push_lines(account, services, resolved_domains, private_networks):
+def _build_ccd_push_lines(
+    account, services, resolved_domains, private_networks, dept_granted=None
+):
     """Build `push "route ..."` lines for an account's CCD file.
 
     A tag-based ACCEPT rule in the firewall is not enough on its own in
@@ -296,7 +314,7 @@ def _build_ccd_push_lines(account, services, resolved_domains, private_networks)
     lines = []
     seen_routes = set()
 
-    for service in _account_matched_services(account, services):
+    for service in _account_matched_services(account, services, dept_granted):
         for subnet in service.subnets:
             net = netaddr.IPNetwork(str(subnet))
             if _in_private_networks(net, private_networks):
@@ -332,11 +350,12 @@ class AgentService(basic.BasicService):
         # last resolved{domain: ip_set} snapshot handed to process_instance,
         # so _iteration can detect "DNS changed" and force a full CCD rebuild
         self._last_resolved_for_ccd = None
-        # last total Service row count, to detect deletions (see
+        # last per-model row counts, to detect deletions (see
         # _has_firewall_data_changed): an `updated_at >=` filter can never
-        # match a row that's gone, so a deleted Service is otherwise
-        # invisible and its ACCEPT rule/route/CCD entry would linger.
-        self._last_service_count = None
+        # match a row that's gone, so a deleted Service/Department/
+        # membership is otherwise invisible and its ACCEPT rule/route/CCD
+        # entry would linger.
+        self._last_row_counts = None
         # nexthops already warned about as not-on-link, to log once
         # instead of every tick (see _filter_routable_services)
         self._warned_nexthops = set()
@@ -377,43 +396,59 @@ class AgentService(basic.BasicService):
                     "updated_at": dm_filters.GE(self.last_processed_at),
                 }
                 accounts = models.Account.objects.get_all(session=s, filters=filters)
+            dept_granted = self._department_granted(s)
 
         for name, conf in self.prefixes.items():
-            self.process_instance(name, conf, accounts, services, resolved)
+            self.process_instance(
+                name, conf, accounts, services, resolved, dept_granted
+            )
 
         # Update cursor after processing both CCD and firewall
         self.last_processed_at = iter_started - self.lag
 
+    def _department_granted(self, session):
+        """Compute {account_uuid: tags granted via departments} for the
+        current DB state (see models.department_granted_tags)."""
+        departments = models.Department.objects.get_all(session=session)
+        if not departments:
+            return {}
+        links = models.AccountDepartment.objects.get_all(session=session)
+        return models.department_granted_tags(departments, links)
+
     def _has_firewall_data_changed(self):
-        """Check if any accounts or services changed since last reconciliation.
+        """Check if any access-relevant data changed since last reconciliation.
 
         Returns True if a full snapshot is needed for firewall reconciliation.
 
         `updated_at >=` catches inserts/updates but can never match a row
         that's been deleted, so a deleted Service (whose subnets/domains an
-        account may still be ACCEPTed for) would otherwise never be
-        detected as a change. Total Service count is tracked across calls
-        to additionally catch deletions. Account deletions aren't tracked
-        this way: an orphaned CCD/iptables entry for a deleted account is
-        low-risk (its cert is gone too, so it can't reconnect), unlike a
-        still-connected account keeping access via a deleted Service.
+        account may still be ACCEPTed for), Department, or department
+        membership would otherwise never be detected as a change. Total
+        row counts are tracked across calls to additionally catch
+        deletions. Account deletions aren't tracked this way: an orphaned
+        CCD/iptables entry for a deleted account is low-risk (its cert is
+        gone too, so it can't reconnect), unlike a still-connected account
+        keeping access via a deleted Service/Department.
         """
+        counted_models = (
+            models.Service,
+            models.Department,
+            models.AccountDepartment,
+        )
         with self._ctx.session_manager() as s:
             filters = {
                 "updated_at": dm_filters.GE(self.last_processed_at),
             }
             if models.Account.objects.count(session=s, filters=filters):
                 return True
-            if models.Service.objects.count(session=s, filters=filters):
-                return True
-            service_count = models.Service.objects.count(session=s)
+            for model in counted_models:
+                if model.objects.count(session=s, filters=filters):
+                    return True
+            counts = {model: model.objects.count(session=s) for model in counted_models}
 
-        service_deleted = (
-            self._last_service_count is not None
-            and service_count != self._last_service_count
-        )
-        self._last_service_count = service_count
-        return service_deleted
+        deleted = self._last_row_counts is not None and counts != self._last_row_counts
+        self._last_row_counts = counts
+        return deleted
 
     def _routing_conf(self):
         """Routing/DNS options are host-wide (not per-openvpn-instance);
@@ -699,6 +734,7 @@ class AgentService(basic.BasicService):
         with self._ctx.session_manager() as s:
             accounts = models.Account.objects.get_all(session=s)
             services = models.Service.objects.get_all(session=s)
+            dept_granted = self._department_granted(s)
 
         # Build desired chains from all prefixes
         desired_chains = {}
@@ -734,6 +770,7 @@ class AgentService(basic.BasicService):
                 firewall_whitelist,
                 accounts,
                 services,
+                dept_granted,
             )
             chain_to_subnet[chain_name] = str(vpn_subnet)
 
@@ -932,7 +969,13 @@ class AgentService(basic.BasicService):
             )
 
     def process_instance(
-        self, name, conf, accounts, services=(), resolved_domains=None
+        self,
+        name,
+        conf,
+        accounts,
+        services=(),
+        resolved_domains=None,
+        dept_granted=None,
     ):
         instance_subnet = netaddr.IPNetwork(conf.openvpn_subnet_cidr)
         dir = conf.openvpn_config_dir
@@ -970,6 +1013,6 @@ class AgentService(basic.BasicService):
 
                 f.write(f"ifconfig-push {client_ip} {instance_subnet.netmask}\n")
                 for line in _build_ccd_push_lines(
-                    account, services, resolved_domains, private_networks
+                    account, services, resolved_domains, private_networks, dept_granted
                 ):
                     f.write(f"{line}\n")

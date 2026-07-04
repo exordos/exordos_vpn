@@ -194,6 +194,41 @@ class NetworkController(
     )
 
 
+class DepartmentController(
+    iam_controllers.PolicyBasedWithoutProjectController,
+    ra_controllers.BaseResourceControllerPaginated,
+):
+    """Controller for /departments/ endpoint.
+
+    Org-structure nodes carrying network access tags; member accounts
+    (see AccountDepartmentController) inherit the tags of their
+    departments and of all ancestor departments.
+    """
+
+    __policy_service_name__ = "vpn"
+    __policy_name__ = "departments"
+
+    __resource__ = resources.ResourceByRAModel(
+        models.Department,
+        convert_underscore=False,
+    )
+
+
+class AccountDepartmentController(
+    iam_controllers.PolicyBasedWithoutProjectController,
+    ra_controllers.BaseResourceControllerPaginated,
+):
+    """Controller for /account_departments/ endpoint (membership links)."""
+
+    __policy_service_name__ = "vpn"
+    __policy_name__ = "account_departments"
+
+    __resource__ = resources.ResourceByRAModel(
+        models.AccountDepartment,
+        convert_underscore=False,
+    )
+
+
 class AuthVerifyError(ra_exceptions.RestAlchemyException):
     message = "Authentication failed"
     code = 403

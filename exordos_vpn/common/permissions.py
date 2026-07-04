@@ -20,12 +20,16 @@ PERMS_VIEWER = [
     "vpn.accounts.read",
     "vpn.otp_devices.read",
     "vpn.services.read",
+    "vpn.departments.read",
+    "vpn.account_departments.read",
 ]
 
 PERMS_EDITOR = PERMS_VIEWER + [
     "vpn.accounts.write",
     "vpn.otp_devices.write",
     "vpn.services.write",
+    "vpn.departments.write",
+    "vpn.account_departments.write",
 ]
 
 ALL_PERMS = set(PERMS_EDITOR)

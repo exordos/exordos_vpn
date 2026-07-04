@@ -307,6 +307,74 @@ class Service(CommonModel, models.ModelWithNameDesc):
             raise ValueError("Service requires at least one of subnets/domains")
 
 
+class Department(CommonModel, models.ModelWithNameDesc):
+    """Org-structure node carrying network access tags.
+
+    Accounts linked to a department (see AccountDepartment) get its
+    `network_access_tags` — and those of all its ancestors — merged into
+    their own for Service matching, so access rules can be granted per
+    department instead of per account.
+    """
+
+    __tablename__ = "departments"
+
+    # Parent department UUID (tree). Kept as a plain UUID (the FK lives
+    # in SQL) rather than a self-referencing relationship, so fetching a
+    # department doesn't recursively load its whole ancestor chain.
+    parent = properties.property(types.AllowNone(types.UUID()), default=None)
+    network_access_tags = properties.property(
+        types.TypedList(types.String()),
+        default=[],
+    )
+
+
+class AccountDepartment(CommonModel):
+    """Many-to-many relationship between Account and Department.
+
+    CommonModel (not bare ModelWithUUID) so rows carry updated_at and the
+    server agent can detect membership changes incrementally.
+    """
+
+    __tablename__ = "account_departments"
+
+    account = relationships.relationship(Account, required=True)
+    department = relationships.relationship(Department, required=True)
+
+
+def department_effective_tags(departments):
+    """Map each department UUID to its own + all ancestors' tags.
+
+    Walks parent links iteratively with a visited-set, so a cycle in the
+    data (which the CLI/API refuse to create, but may still appear via
+    manual edits) degrades to "tags of the departments seen so far"
+    instead of hanging the caller.
+    """
+    by_uuid = {d.uuid: d for d in departments}
+    resolved = {}
+    for department in departments:
+        tags = set()
+        seen = set()
+        current = department
+        while current is not None and current.uuid not in seen:
+            seen.add(current.uuid)
+            tags.update(current.network_access_tags or [])
+            current = by_uuid.get(current.parent) if current.parent else None
+        resolved[department.uuid] = tags
+    return resolved
+
+
+def department_granted_tags(departments, account_departments):
+    """Map account UUID -> set of tags granted via department membership
+    (including tags inherited from ancestor departments)."""
+    dept_tags = department_effective_tags(departments)
+    granted = {}
+    for link in account_departments:
+        account_uuid = link.account.uuid
+        tags = granted.setdefault(account_uuid, set())
+        tags.update(dept_tags.get(link.department.uuid, set()))
+    return granted
+
+
 class OtpDevice(CommonModel):
     __tablename__ = "otp_devices"
 

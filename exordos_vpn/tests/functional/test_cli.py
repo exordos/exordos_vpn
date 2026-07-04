@@ -203,3 +203,110 @@ class TestAccountOtpRequiredCli(CliTestCase):
         # account is now locked out until one is issued.
         assert "no active OTP" in on_result.output
         assert self._get_account("alice").otp_required is True
+
+
+class TestDepartmentCli(CliTestCase):
+    """Functional tests for the `department-*` / `account-department-*`
+    CLI commands."""
+
+    def _make_account(self, name="alice"):
+        network = models.Network(
+            name="testnet", subnets=[netaddr.IPNetwork("10.8.0.0/24")]
+        )
+        network.insert()
+        account = models.Account(
+            account_name=name,
+            user_id=f"user-{name}",
+            pin="123456",
+            network=network,
+            address_offset=2,
+        )
+        account.insert()
+        return account
+
+    def _get_department(self, name):
+        with contexts.Context().session_manager() as s:
+            return models.Department.objects.get_one(
+                session=s, filters={"name": dm_filters.EQ(name)}
+            )
+
+    def _membership_count(self, account):
+        with contexts.Context().session_manager() as s:
+            return models.AccountDepartment.objects.count(
+                session=s, filters={"account": dm_filters.EQ(account)}
+            )
+
+    def test_department_create_with_parent_and_tags(self, monkeypatch):
+        root = self._invoke(
+            monkeypatch, ["department-create", "org", "--tags", "vpn-basic"]
+        )
+        assert root.exit_code == 0, root.output
+
+        child = self._invoke(
+            monkeypatch,
+            ["department-create", "engineering", "--parent", "org", "--tags", "git"],
+        )
+        assert child.exit_code == 0, child.output
+
+        engineering = self._get_department("engineering")
+        assert engineering.parent == self._get_department("org").uuid
+        assert engineering.network_access_tags == ["git"]
+
+    def test_department_set_parent_refuses_cycle(self, monkeypatch):
+        self._invoke(monkeypatch, ["department-create", "org"])
+        self._invoke(monkeypatch, ["department-create", "child", "--parent", "org"])
+
+        result = self._invoke(monkeypatch, ["department-set-parent", "org", "child"])
+
+        assert result.exit_code != 0
+        assert "cycle" in result.output
+        assert self._get_department("org").parent is None
+
+    def test_department_set_parent_empty_makes_root(self, monkeypatch):
+        self._invoke(monkeypatch, ["department-create", "org"])
+        self._invoke(monkeypatch, ["department-create", "child", "--parent", "org"])
+
+        result = self._invoke(monkeypatch, ["department-set-parent", "child", ""])
+
+        assert result.exit_code == 0, result.output
+        assert self._get_department("child").parent is None
+
+    def test_account_department_add_remove(self, monkeypatch):
+        account = self._make_account()
+        self._invoke(monkeypatch, ["department-create", "engineering"])
+
+        add = self._invoke(
+            monkeypatch, ["account-department-add", "alice", "engineering"]
+        )
+        assert add.exit_code == 0, add.output
+        assert self._membership_count(account) == 1
+
+        # Idempotent: adding again doesn't duplicate the link.
+        self._invoke(monkeypatch, ["account-department-add", "alice", "engineering"])
+        assert self._membership_count(account) == 1
+
+        remove = self._invoke(
+            monkeypatch, ["account-department-remove", "alice", "engineering"]
+        )
+        assert remove.exit_code == 0, remove.output
+        assert self._membership_count(account) == 0
+
+    def test_department_delete_refused_with_members_then_ok(self, monkeypatch):
+        self._make_account()
+        self._invoke(monkeypatch, ["department-create", "engineering"])
+        self._invoke(monkeypatch, ["account-department-add", "alice", "engineering"])
+
+        refused = self._invoke(monkeypatch, ["department-delete", "engineering"])
+        assert refused.exit_code != 0
+        assert "member accounts" in refused.output
+
+        self._invoke(monkeypatch, ["account-department-remove", "alice", "engineering"])
+        deleted = self._invoke(monkeypatch, ["department-delete", "engineering"])
+        assert deleted.exit_code == 0, deleted.output
+        with contexts.Context().session_manager() as s:
+            assert (
+                models.Department.objects.get_one_or_none(
+                    session=s, filters={"name": dm_filters.EQ("engineering")}
+                )
+                is None
+            )

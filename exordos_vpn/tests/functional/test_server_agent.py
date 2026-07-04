@@ -102,6 +102,20 @@ class TestServerAgentFirewall(base.DbTestCase):
         with open(path) as f:
             return f.read()
 
+    def _make_department(self, name, parent=None, tags=None):
+        department = models.Department(
+            name=name,
+            parent=parent.uuid if parent else None,
+            network_access_tags=tags or [],
+        )
+        department.insert()
+        return department
+
+    def _link_department(self, account, department):
+        link = models.AccountDepartment(account=account, department=department)
+        link.insert()
+        return link
+
     def test_idempotent_second_reconcile_is_noop(self, tmp_path, iptables_netns):
         network = self._make_network()
         self._make_account(network, "alice", 2, network_access_type="ALL")
@@ -811,3 +825,174 @@ class TestServerAgentCcdRoutePush(TestServerAgentFirewall):
         assert 'push "route 93.184.216.0 255.255.255.0"' not in self._read_ccd(
             tmp_path, "", "alice"
         )
+
+
+class TestServerAgentDepartments(TestServerAgentFirewall):
+    """Functional tests for department-granted access tags.
+
+    Departments are pure tag carriers: matching stays tag-based, only the
+    "effective tags of an account" computation changes. These run the full
+    `_iteration()` so the change-detection path (department/membership
+    rows, not just accounts/services) is exercised too.
+    """
+
+    def test_department_tag_grants_firewall_and_ccd(self, tmp_path, iptables_netns):
+        network = self._make_network()
+        alice = self._make_account(network, "alice", 2)  # no own tags
+        department = self._make_department("engineering", tags=["ext"])
+        self._link_department(alice, department)
+        self._make_service(
+            "ext-svc", ["93.184.216.0/24"], tags=["ext"], nexthop="127.0.0.2"
+        )
+
+        conf = self._make_conf(tmp_path)
+        agent = server_agent.AgentService(iter_min_period=4, prefixes={"": conf})
+        agent._iteration()
+
+        chain = _chain_name()
+        assert any(
+            "93.184.216.0/24" in rule
+            for rule in agent._get_chain_rules(chain)["accept"]
+        )
+        assert 'push "route 93.184.216.0 255.255.255.0"' in self._read_ccd(
+            tmp_path, "", "alice"
+        )
+
+    def test_nested_department_inherits_parent_tags(self, tmp_path, iptables_netns):
+        """A tag on a parent department applies to accounts of child
+        departments."""
+        network = self._make_network()
+        alice = self._make_account(network, "alice", 2)
+        root = self._make_department("org", tags=["ext"])
+        child = self._make_department("backend", parent=root)
+        self._link_department(alice, child)
+        self._make_service(
+            "ext-svc", ["93.184.216.0/24"], tags=["ext"], nexthop="127.0.0.2"
+        )
+
+        conf = self._make_conf(tmp_path)
+        agent = server_agent.AgentService(iter_min_period=4, prefixes={"": conf})
+        agent._iteration()
+
+        chain = _chain_name()
+        assert any(
+            "93.184.216.0/24" in rule
+            for rule in agent._get_chain_rules(chain)["accept"]
+        )
+        assert 'push "route 93.184.216.0 255.255.255.0"' in self._read_ccd(
+            tmp_path, "", "alice"
+        )
+
+    def test_department_tag_change_rebuilds_without_account_touch(
+        self, tmp_path, iptables_netns
+    ):
+        """Changing only the department row (account untouched) must
+        re-evaluate both firewall and CCD on the next iteration."""
+        network = self._make_network()
+        alice = self._make_account(network, "alice", 2)
+        department = self._make_department("engineering", tags=["ext"])
+        self._link_department(alice, department)
+        self._make_service(
+            "ext-svc", ["93.184.216.0/24"], tags=["ext"], nexthop="127.0.0.2"
+        )
+
+        conf = self._make_conf(tmp_path)
+        agent = server_agent.AgentService(iter_min_period=4, prefixes={"": conf})
+        chain = _chain_name()
+
+        agent._iteration()
+        assert any(
+            "93.184.216.0/24" in rule
+            for rule in agent._get_chain_rules(chain)["accept"]
+        )
+
+        department.network_access_tags = ["other"]
+        department.save()
+        agent._iteration()
+
+        assert not any(
+            "93.184.216.0/24" in rule
+            for rule in agent._get_chain_rules(chain)["accept"]
+        )
+        assert 'push "route 93.184.216.0 255.255.255.0"' not in self._read_ccd(
+            tmp_path, "", "alice"
+        )
+
+    def test_membership_removal_revokes_access(self, tmp_path, iptables_netns):
+        """Deleting a membership link leaves no row for an `updated_at >=`
+        filter to match — regression test for count-based detection of
+        AccountDepartment deletions."""
+        network = self._make_network()
+        alice = self._make_account(network, "alice", 2)
+        department = self._make_department("engineering", tags=["ext"])
+        link = self._link_department(alice, department)
+        self._make_service(
+            "ext-svc", ["93.184.216.0/24"], tags=["ext"], nexthop="127.0.0.2"
+        )
+
+        conf = self._make_conf(tmp_path)
+        agent = server_agent.AgentService(iter_min_period=4, prefixes={"": conf})
+        chain = _chain_name()
+
+        agent._iteration()
+        assert any(
+            "93.184.216.0/24" in rule
+            for rule in agent._get_chain_rules(chain)["accept"]
+        )
+
+        link.delete()
+        agent._iteration()
+
+        assert not any(
+            "93.184.216.0/24" in rule
+            for rule in agent._get_chain_rules(chain)["accept"]
+        )
+        assert 'push "route 93.184.216.0 255.255.255.0"' not in self._read_ccd(
+            tmp_path, "", "alice"
+        )
+
+    def test_department_delete_revokes_access(self, tmp_path, iptables_netns):
+        """Deleting a department cascades its membership rows (SQL FK) and
+        must revoke access on the next iteration."""
+        network = self._make_network()
+        alice = self._make_account(network, "alice", 2)
+        department = self._make_department("engineering", tags=["ext"])
+        self._link_department(alice, department)
+        self._make_service(
+            "ext-svc", ["93.184.216.0/24"], tags=["ext"], nexthop="127.0.0.2"
+        )
+
+        conf = self._make_conf(tmp_path)
+        agent = server_agent.AgentService(iter_min_period=4, prefixes={"": conf})
+        chain = _chain_name()
+
+        agent._iteration()
+        assert any(
+            "93.184.216.0/24" in rule
+            for rule in agent._get_chain_rules(chain)["accept"]
+        )
+
+        department.delete()
+        agent._iteration()
+
+        assert not any(
+            "93.184.216.0/24" in rule
+            for rule in agent._get_chain_rules(chain)["accept"]
+        )
+
+    def test_own_tags_union_with_department_tags(self, tmp_path, iptables_netns):
+        """Personal account tags stay as an additive exception mechanism."""
+        network = self._make_network()
+        alice = self._make_account(network, "alice", 2, network_access_tags=["own"])
+        department = self._make_department("engineering", tags=["ext"])
+        self._link_department(alice, department)
+        self._make_service("ext-svc", ["93.184.216.0/24"], tags=["ext"])
+        self._make_service("own-svc", ["93.184.217.0/24"], tags=["own"])
+
+        conf = self._make_conf(tmp_path)
+        agent = server_agent.AgentService(iter_min_period=4, prefixes={"": conf})
+        agent._iteration()
+
+        accept = agent._get_chain_rules(_chain_name())["accept"]
+        assert any("93.184.216.0/24" in rule for rule in accept)
+        assert any("93.184.217.0/24" in rule for rule in accept)
