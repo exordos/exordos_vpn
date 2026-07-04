@@ -19,6 +19,8 @@ import logging
 import os
 import subprocess
 
+import dns.exception
+import dns.resolver
 from gcl_looper.services import basic
 import netaddr
 from restalchemy.common import contexts
@@ -33,16 +35,30 @@ IPTABLES_SAVE_BIN = "iptables-save"
 IPTABLES_BIN_PATH = "/usr/sbin/iptables"
 FIREWALL_TABLE = "filter"
 
+IPSET_BIN_PATH = "/usr/sbin/ipset"
+IP_BIN_PATH = "/usr/sbin/ip"
+IPSET_NAME_PREFIX = "exvpn_svc_"
+DEFAULT_DNS_TTL_FLOOR_SECONDS = 30
+
 
 def _host_cidr(ip):
     """Return a host IP in /32 CIDR notation as iptables normalizes it."""
     return f"{ip}/32"
 
 
-def _build_kind_rules(chain_name, client_ip, subnet, kind):
+def _ipset_name(service):
+    """Deterministic ipset name for a domain-based service (max 31 chars)."""
+    return f"{IPSET_NAME_PREFIX}{str(service.uuid).replace('-', '')[:16]}"
+
+
+def _build_kind_rules(chain_name, client_ip, dst_clause, kind):
     """Build iptables ACCEPT rule for a single kind.
 
-    For 'any' kind: unrestricted access to the subnet.
+    dst_clause is either "-d <cidr>" (static subnet) or
+    "-m set --match-set <name> dst" (domain-based service, resolved via the
+    DNS agent into an ipset).
+
+    For 'any' kind: unrestricted access to the destination.
     For 'tcp'/'udp' kind: protocol-specific access with port range.
 
     Returns:
@@ -50,7 +66,7 @@ def _build_kind_rules(chain_name, client_ip, subnet, kind):
     """
     src = _host_cidr(client_ip)
     if kind.KIND == "any":
-        return {f"-A {chain_name} -s {src} -d {subnet} -j ACCEPT"}
+        return {f"-A {chain_name} -s {src} {dst_clause} -j ACCEPT"}
 
     protocol = kind.KIND
     min_port = kind.min_port
@@ -58,15 +74,15 @@ def _build_kind_rules(chain_name, client_ip, subnet, kind):
     rules = set()
 
     if min_port == 1 and max_port == 65535:
-        rules.add(f"-A {chain_name} -s {src} -d {subnet} -p {protocol} -j ACCEPT")
+        rules.add(f"-A {chain_name} -s {src} {dst_clause} -p {protocol} -j ACCEPT")
     elif min_port == max_port:
         rules.add(
-            f"-A {chain_name} -s {src} -d {subnet} "
+            f"-A {chain_name} -s {src} {dst_clause} "
             f"-p {protocol} -m {protocol} --dport {min_port} -j ACCEPT"
         )
     else:
         rules.add(
-            f"-A {chain_name} -s {src} -d {subnet} "
+            f"-A {chain_name} -s {src} {dst_clause} "
             f"-p {protocol} -m {protocol} --dport {min_port}:{max_port} -j ACCEPT"
         )
     return rules
@@ -105,21 +121,25 @@ def _build_chain_rules(
             account_tags = set(account.network_access_tags or [])
             for service in services:
                 service_tags = set(service.tags or [])
-                if account_tags & service_tags:
-                    service_kinds = service.kinds
-                    if not service_kinds:
-                        for subnet in service.subnets:
-                            accept_rules.add(
-                                f"-A {chain_name} -s {src} -d {subnet} -j ACCEPT"
-                            )
-                    else:
-                        for subnet in service.subnets:
-                            for kind in service_kinds:
-                                accept_rules.update(
-                                    _build_kind_rules(
-                                        chain_name, client_ip, subnet, kind
-                                    )
+                if not (account_tags & service_tags):
+                    continue
+                service_kinds = service.kinds
+                dst_clauses = [f"-d {subnet}" for subnet in service.subnets]
+                if service.domains:
+                    dst_clauses.append(f"-m set --match-set {_ipset_name(service)} dst")
+                if not service_kinds:
+                    for dst_clause in dst_clauses:
+                        accept_rules.add(
+                            f"-A {chain_name} -s {src} {dst_clause} -j ACCEPT"
+                        )
+                else:
+                    for dst_clause in dst_clauses:
+                        for kind in service_kinds:
+                            accept_rules.update(
+                                _build_kind_rules(
+                                    chain_name, client_ip, dst_clause, kind
                                 )
+                            )
 
     # Allow global whitelist CIDRs from VPN subnet
     for cidr in firewall_whitelist:
@@ -137,6 +157,167 @@ def _make_chain_name(prefix, version, subnet):
     return f"{prefix}_{version}_{safe_subnet}"
 
 
+def _resolve_domain(domain, resolvers=None, timeout=5.0):
+    """Resolve A records for domain via dnspython.
+
+    resolvers, if given, is a list of DNS server IPs to query instead of
+    the system resolver (/etc/resolv.conf) — e.g. to force resolution
+    through a specific upstream rather than whatever the VPN gateway host
+    happens to be configured with.
+
+    Returns (ip_set, ttl_seconds), or None if resolution failed (caller
+    should keep using the last-known-good answer, if any).
+    """
+    if resolvers:
+        resolver = dns.resolver.Resolver(configure=False)
+        resolver.nameservers = resolvers
+    else:
+        resolver = dns.resolver.get_default_resolver()
+    try:
+        answer = resolver.resolve(domain, "A", lifetime=timeout)
+    except dns.exception.DNSException as e:
+        LOG.warning("DNS resolution failed for %r: %s", domain, e)
+        return None
+    ips = {str(rdata) for rdata in answer}
+    ttl = answer.rrset.ttl if answer.rrset is not None else 0
+    return ips, ttl
+
+
+def _parse_dns_resolvers(raw):
+    """Parse the comma-separated dns_resolvers config value into a list of
+    IP strings, skipping (and warning about) invalid entries."""
+    resolvers = []
+    for entry in (raw or "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            netaddr.IPAddress(entry)
+        except (netaddr.AddrFormatError, ValueError) as e:
+            LOG.warning("Invalid dns_resolvers entry %r: %s", entry, e)
+            continue
+        resolvers.append(entry)
+    return resolvers
+
+
+def _parse_private_networks(raw):
+    """Parse the comma-separated private_networks config value into a list
+    of netaddr.IPNetwork, skipping (and warning about) invalid entries."""
+    networks = []
+    for entry in (raw or "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            networks.append(netaddr.IPNetwork(entry))
+        except (netaddr.AddrFormatError, ValueError) as e:
+            LOG.warning("Invalid private_networks entry %r: %s", entry, e)
+    return networks
+
+
+def _in_private_networks(dst, private_networks):
+    """True if dst (an IPNetwork or IPAddress) is fully contained in one of
+    private_networks — i.e. the OpenVPN server config already pushes a
+    covering route for it and the client needs nothing extra."""
+    return any(dst in net for net in private_networks)
+
+
+def _normalize_dst(dst):
+    """Ensure a route destination carries an explicit prefix length.
+
+    `ip route show` prints host routes without a /32 (or /128) suffix, so
+    reconciliation must normalize both sides before diffing.
+    """
+    if "/" in dst:
+        return dst
+    return f"{dst}/128" if ":" in dst else f"{dst}/32"
+
+
+def _build_desired_routes(services, resolved_domains):
+    """Build the desired {dst_cidr: nexthop_ip} mapping for routed services.
+
+    Static `subnets` map directly; `domains` are routed as individual host
+    routes for each currently-resolved IP (ip route can't match an ipset).
+    """
+    desired = {}
+    for service in services:
+        if not service.nexthop:
+            continue
+        nexthop = str(service.nexthop)
+        for subnet in service.subnets:
+            desired[str(subnet)] = nexthop
+        for domain in service.domains:
+            for ip in resolved_domains.get(str(domain), set()):
+                desired[_normalize_dst(ip)] = nexthop
+    return desired
+
+
+def _account_matched_services(account, services):
+    """Services this account may reach.
+
+    Mirrors the same matching _build_chain_rules uses for the firewall
+    ACCEPT rules, so a route is only ever pushed for a destination the
+    firewall would actually let through: "ALL" accounts get a blanket
+    ACCEPT there, so they match every service; RESTRICTED accounts match
+    by tag intersection.
+    """
+    if account.network_access_type == "ALL":
+        return list(services)
+    account_tags = set(account.network_access_tags or [])
+    return [s for s in services if account_tags & set(s.tags or [])]
+
+
+def _build_ccd_push_lines(account, services, resolved_domains, private_networks):
+    """Build `push "route ..."` lines for an account's CCD file.
+
+    A tag-based ACCEPT rule in the firewall is not enough on its own in
+    split-tunnel mode: unless the client's OS also has a route pointing
+    the destination at the tun interface, matching traffic never enters
+    the tunnel in the first place. This mirrors _account_matched_services
+    to push exactly (and only) the routes each account's ACL grants.
+
+    Destinations contained in `private_networks` (the CIDRs the OpenVPN
+    server config already pushes to every client) are skipped: the client
+    already tunnels them, a per-account push would be a duplicate. With
+    the option unset every matched destination is pushed — harmlessly
+    redundant for internal services, so set it in any real deployment.
+
+    `network_access_type == "ALL"` accounts match *every* service: their
+    firewall grant is a blanket ACCEPT, but the client still only tunnels
+    what's pushed. Full-tunnel redirect-gateway is out of scope.
+
+    DNS is deliberately NOT pushed here: clients get their resolver from
+    the OpenVPN server config's global `push "dhcp-option DNS ..."` (they
+    need one for anything to work at all, not just for domain services).
+    Domain-based routing/ACL still requires the client to resolve to the
+    same IPs the agent did — ensured by pointing `dns_resolvers` and the
+    server config's global dhcp-option at the same resolver.
+    """
+    lines = []
+    seen_routes = set()
+
+    for service in _account_matched_services(account, services):
+        for subnet in service.subnets:
+            net = netaddr.IPNetwork(str(subnet))
+            if _in_private_networks(net, private_networks):
+                continue
+            key = (str(net.network), str(net.netmask))
+            if key not in seen_routes:
+                seen_routes.add(key)
+                lines.append(f'push "route {net.network} {net.netmask}"')
+
+        for domain in service.domains:
+            for ip in resolved_domains.get(str(domain), set()):
+                if _in_private_networks(netaddr.IPAddress(ip), private_networks):
+                    continue
+                key = (ip, "255.255.255.255")
+                if key not in seen_routes:
+                    seen_routes.add(key)
+                    lines.append(f'push "route {ip} 255.255.255.255"')
+
+    return lines
+
+
 class AgentService(basic.BasicService):
     def __init__(self, prefixes=None, **kwargs):
         self.prefixes = prefixes
@@ -146,24 +327,59 @@ class AgentService(basic.BasicService):
         )
         # lag to avoid race conditions
         self.lag = datetime.timedelta(seconds=30)
+        # domain -> (ip_set, expires_at); populated by _reconcile_dns
+        self._dns_cache = {}
+        # last resolved{domain: ip_set} snapshot handed to process_instance,
+        # so _iteration can detect "DNS changed" and force a full CCD rebuild
+        self._last_resolved_for_ccd = None
+        # last total Service row count, to detect deletions (see
+        # _has_firewall_data_changed): an `updated_at >=` filter can never
+        # match a row that's gone, so a deleted Service is otherwise
+        # invisible and its ACCEPT rule/route/CCD entry would linger.
+        self._last_service_count = None
+        # nexthops already warned about as not-on-link, to log once
+        # instead of every tick (see _filter_routable_services)
+        self._warned_nexthops = set()
         super().__init__(**kwargs)
 
     def _iteration(self):
         iter_started = datetime.datetime.now(datetime.timezone.utc)
 
+        # Domain resolution / ipsets / nexthop routes: this can't be gated
+        # on "did DB data change" like firewall reconciliation below, since
+        # a Service row can be untouched while its domains' resolved IPs
+        # rotate (CDN/anycast). Cheap no-op on most ticks: DNS answers are
+        # cached per-domain until their TTL expires, and ipset/route
+        # reconciliation diff against current state before touching anything.
+        services, resolved = [], {}
+        if self.prefixes:
+            services, resolved = self._reconcile_routing()
+
+        resolved_changed = resolved != self._last_resolved_for_ccd
+        self._last_resolved_for_ccd = resolved
+
         # Reconcile firewall with incremental data first
-        if self._has_firewall_data_changed() and self.prefixes:
+        firewall_data_changed = self._has_firewall_data_changed()
+        if firewall_data_changed and self.prefixes:
             self._reconcile_firewall()
 
-        # CCD: incremental fetch of accounts updated since last cycle
+        # CCD (ifconfig-push + per-account `push route`/DNS lines):
+        # incremental fetch of accounts updated since last cycle, unless a
+        # Service changed (may add/remove routes for accounts whose own
+        # row is untouched) or a domain's resolved IPs changed (same
+        # reason) — in which case every CCD needs re-evaluating.
+        full_ccd_rebuild = firewall_data_changed or resolved_changed
         with self._ctx.session_manager() as s:
-            filters = {
-                "updated_at": dm_filters.GE(self.last_processed_at),
-            }
-            accounts = models.Account.objects.get_all(session=s, filters=filters)
+            if full_ccd_rebuild:
+                accounts = models.Account.objects.get_all(session=s)
+            else:
+                filters = {
+                    "updated_at": dm_filters.GE(self.last_processed_at),
+                }
+                accounts = models.Account.objects.get_all(session=s, filters=filters)
 
         for name, conf in self.prefixes.items():
-            self.process_instance(name, conf, accounts)
+            self.process_instance(name, conf, accounts, services, resolved)
 
         # Update cursor after processing both CCD and firewall
         self.last_processed_at = iter_started - self.lag
@@ -172,6 +388,15 @@ class AgentService(basic.BasicService):
         """Check if any accounts or services changed since last reconciliation.
 
         Returns True if a full snapshot is needed for firewall reconciliation.
+
+        `updated_at >=` catches inserts/updates but can never match a row
+        that's been deleted, so a deleted Service (whose subnets/domains an
+        account may still be ACCEPTed for) would otherwise never be
+        detected as a change. Total Service count is tracked across calls
+        to additionally catch deletions. Account deletions aren't tracked
+        this way: an orphaned CCD/iptables entry for a deleted account is
+        low-risk (its cert is gone too, so it can't reconnect), unlike a
+        still-connected account keeping access via a deleted Service.
         """
         with self._ctx.session_manager() as s:
             filters = {
@@ -181,7 +406,285 @@ class AgentService(basic.BasicService):
                 return True
             if models.Service.objects.count(session=s, filters=filters):
                 return True
-        return False
+            service_count = models.Service.objects.count(session=s)
+
+        service_deleted = (
+            self._last_service_count is not None
+            and service_count != self._last_service_count
+        )
+        self._last_service_count = service_count
+        return service_deleted
+
+    def _routing_conf(self):
+        """Routing/DNS options are host-wide (not per-openvpn-instance);
+        take them from an arbitrary configured prefix (in practice there is
+        usually exactly one)."""
+        return next(iter(self.prefixes.values()), None)
+
+    def _reconcile_routing(self):
+        """Refresh DNS-resolved ipsets (always) and nexthop routes (if
+        routing_enabled). See the comment in _iteration() for why this
+        can't be gated on _has_firewall_data_changed().
+
+        Always runs the full reconcile (not just when a service currently
+        has domains/nexthop): a service losing its last domain or nexthop
+        must still get its stale ipset/route cleaned up, and that only
+        happens by diffing against the (now smaller) desired state.
+
+        Returns (services, resolved) so the caller can reuse the same
+        snapshot for CCD route-push generation without a second DNS pass.
+        """
+        with self._ctx.session_manager() as s:
+            services = models.Service.objects.get_all(session=s)
+
+        conf = self._routing_conf()
+        min_interval = getattr(
+            conf, "dns_resolve_min_interval_seconds", DEFAULT_DNS_TTL_FLOOR_SECONDS
+        )
+        routing_enabled = getattr(conf, "routing_enabled", False)
+        routing_proto_id = getattr(conf, "routing_proto_id", 172)
+        resolvers = _parse_dns_resolvers(getattr(conf, "dns_resolvers", ""))
+
+        resolved = self._reconcile_dns(services, min_interval, resolvers)
+
+        # ipset/route syscall failures must not escape: they'd abort the
+        # whole iteration, blocking firewall/CCD reconciliation (including
+        # access revocations) until the failure clears. Log and retry next
+        # tick instead.
+        try:
+            self._reconcile_ipsets(services, resolved)
+        except Exception:
+            LOG.exception("ipset reconciliation failed, will retry")
+
+        if routing_enabled:
+            try:
+                routed = self._filter_routable_services(services)
+                desired_routes = _build_desired_routes(routed, resolved)
+                self._reconcile_routes(desired_routes, routing_proto_id)
+            except Exception:
+                LOG.exception("route reconciliation failed, will retry")
+
+        return services, resolved
+
+    def _filter_routable_services(self, services):
+        """Drop services whose nexthop can't actually be used as a gateway.
+
+        `ip route replace <dst> via <nexthop>` requires the nexthop to be
+        directly reachable (an on-link route, no intermediate gateway);
+        a nexthop that isn't would otherwise fail the whole route
+        reconcile with "Nexthop has invalid gateway" on every tick.
+        Checked upfront per unique nexthop via `ip route get`; invalid
+        ones are skipped with a warning (once, until they change state).
+        """
+        validity = {}
+        for service in services:
+            if not service.nexthop:
+                continue
+            nexthop = str(service.nexthop)
+            if nexthop not in validity:
+                validity[nexthop] = self._nexthop_on_link(nexthop)
+
+        for nexthop, valid in validity.items():
+            if valid:
+                self._warned_nexthops.discard(nexthop)
+            elif nexthop not in self._warned_nexthops:
+                self._warned_nexthops.add(nexthop)
+                LOG.warning(
+                    "Nexthop %s is not directly reachable (no on-link "
+                    "route); skipping routes via it",
+                    nexthop,
+                )
+
+        return [
+            s for s in services if not s.nexthop or validity.get(str(s.nexthop), False)
+        ]
+
+    def _nexthop_on_link(self, nexthop):
+        """True if nexthop is directly reachable (usable as a route gateway)."""
+        try:
+            out = self._run_ip("route", "get", nexthop)
+        except RuntimeError:
+            return False
+        first_line = out.splitlines()[0] if out.splitlines() else ""
+        return " via " not in f" {first_line} "
+
+    def _reconcile_dns(self, services, min_interval_seconds, resolvers=None):
+        """Resolve A records for every Service.domains, respecting each
+        domain's own TTL floored at min_interval_seconds so short-TTL
+        domains can't force a resolve on every tick.
+
+        resolvers, if given, is a list of DNS server IPs to query instead
+        of the system resolver (see dns_resolvers config option).
+
+        Returns dict[domain -> set of ip strings].
+        """
+        domains = set()
+        for service in services:
+            domains.update(str(d) for d in service.domains)
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+        resolved = {}
+        for domain in domains:
+            cached = self._dns_cache.get(domain)
+            if cached is not None and cached[1] > now:
+                resolved[domain] = cached[0]
+                continue
+
+            result = _resolve_domain(domain, resolvers=resolvers)
+            if result is None:
+                if cached is not None:
+                    resolved[domain] = cached[0]
+                continue
+
+            ips, ttl = result
+            expires_at = now + datetime.timedelta(
+                seconds=max(ttl, min_interval_seconds)
+            )
+            self._dns_cache[domain] = (ips, expires_at)
+            resolved[domain] = ips
+
+        for stale_domain in set(self._dns_cache) - domains:
+            del self._dns_cache[stale_domain]
+
+        return resolved
+
+    def _run_ipset(self, *args):
+        """Run an ipset command, raising on any failure."""
+        result = subprocess.run(
+            [IPSET_BIN_PATH] + list(args),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        LOG.debug("_run_ipset: %r", args)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"ipset failed: {' '.join(args)}\n"
+                f"rc={result.returncode} stderr={result.stderr}\n"
+                f"stdout={result.stdout}"
+            )
+        return result.stdout
+
+    def _list_managed_ipsets(self):
+        """List existing ipsets managed by this agent (by name prefix)."""
+        out = self._run_ipset("list", "-name")
+        return {
+            line.strip()
+            for line in out.splitlines()
+            if line.strip().startswith(IPSET_NAME_PREFIX)
+        }
+
+    def _ipset_members(self, name):
+        """Current member IPs of an ipset."""
+        out = self._run_ipset("list", name, "-output", "plain")
+        members = set()
+        in_members = False
+        for line in out.splitlines():
+            if line.startswith("Members:"):
+                in_members = True
+                continue
+            if in_members and line.strip():
+                members.add(line.strip())
+        return members
+
+    def _reconcile_ipset(self, name, desired_ips, exists):
+        """Atomically swap an ipset's membership to desired_ips.
+
+        Uses a temp-set + swap so there's no window with an empty/partial
+        set visible to iptables (same fail-safe spirit as
+        _reconcile_chain's DROP-first ordering).
+        """
+        current = self._ipset_members(name) if exists else set()
+        if exists and current == desired_ips:
+            return
+
+        tmp_name = f"{name}_tmp"
+        self._run_ipset("create", tmp_name, "hash:ip", "-exist")
+        self._run_ipset("flush", tmp_name)
+        for ip in desired_ips:
+            self._run_ipset("add", tmp_name, ip)
+        if not exists:
+            self._run_ipset("create", name, "hash:ip", "-exist")
+        self._run_ipset("swap", tmp_name, name)
+        self._run_ipset("destroy", tmp_name)
+
+    def _reconcile_ipsets(self, services, resolved_domains):
+        """Ensure one ipset per domain-based Service, and remove stale ones
+        for services that no longer have domains (or were deleted)."""
+        managed = self._list_managed_ipsets()
+        desired_names = set()
+
+        for service in services:
+            if not service.domains:
+                continue
+            name = _ipset_name(service)
+            desired_names.add(name)
+            desired_ips = set()
+            for domain in service.domains:
+                desired_ips.update(resolved_domains.get(str(domain), set()))
+            self._reconcile_ipset(name, desired_ips, exists=name in managed)
+
+        for stale in managed - desired_names:
+            try:
+                self._run_ipset("destroy", stale)
+            except RuntimeError:
+                LOG.warning(
+                    "ipset %s still in use, will retry next iteration",
+                    stale,
+                    exc_info=True,
+                )
+
+    def _run_ip(self, *args):
+        """Run an `ip` command, raising on any failure."""
+        result = subprocess.run(
+            [IP_BIN_PATH] + list(args),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        LOG.debug("_run_ip: %r", args)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"ip command failed: {' '.join(args)}\n"
+                f"rc={result.returncode} stderr={result.stderr}\n"
+                f"stdout={result.stdout}"
+            )
+        return result.stdout
+
+    def _get_current_routes(self, proto_id):
+        """Current {dst: nexthop} routes owned by this agent (tagged with
+        proto_id), so reconciliation never touches unrelated host routes."""
+        out = self._run_ip("route", "show", "proto", str(proto_id))
+        routes = {}
+        for line in out.splitlines():
+            parts = line.split()
+            if not parts or parts[0] == "default":
+                continue
+            dst = _normalize_dst(parts[0])
+            if "via" in parts:
+                routes[dst] = parts[parts.index("via") + 1]
+        return routes
+
+    def _reconcile_routes(self, desired_routes, proto_id):
+        """Diff-based route reconciliation, scoped to proto_id."""
+        current = self._get_current_routes(proto_id)
+        if current == desired_routes:
+            return
+
+        for dst, nexthop in desired_routes.items():
+            if current.get(dst) != nexthop:
+                self._run_ip(
+                    "route",
+                    "replace",
+                    dst,
+                    "via",
+                    nexthop,
+                    "proto",
+                    str(proto_id),
+                )
+
+        for dst in set(current) - set(desired_routes):
+            self._run_ip("route", "del", dst, "proto", str(proto_id))
 
     def _reconcile_firewall(self):
         """Reconcile iptables state against desired configuration.
@@ -428,12 +931,18 @@ class AgentService(basic.BasicService):
                 f"stdout={result.stdout}"
             )
 
-    def process_instance(self, name, conf, accounts):
+    def process_instance(
+        self, name, conf, accounts, services=(), resolved_domains=None
+    ):
         instance_subnet = netaddr.IPNetwork(conf.openvpn_subnet_cidr)
         dir = conf.openvpn_config_dir
         ccd_dir = os.path.join(dir, f"ccd_{name}" if name else "ccd")
         if not os.path.exists(ccd_dir):
             os.makedirs(ccd_dir)
+        resolved_domains = resolved_domains or {}
+        private_networks = _parse_private_networks(
+            getattr(conf, "private_networks", "")
+        )
         for account in accounts:
             LOG.info("(%s)Processing account: %s", name, account.account_name)
             ccd_file_path = os.path.join(ccd_dir, account.account_name)
@@ -460,3 +969,7 @@ class AgentService(basic.BasicService):
                     continue
 
                 f.write(f"ifconfig-push {client_ip} {instance_subnet.netmask}\n")
+                for line in _build_ccd_push_lines(
+                    account, services, resolved_domains, private_networks
+                ):
+                    f.write(f"{line}\n")

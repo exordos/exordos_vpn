@@ -61,6 +61,42 @@ agent_config_opts = [
         help="Comma-separated list of CIDR blocks globally allowed "
         "for all VPN clients (e.g. 8.8.8.8/32,1.1.1.1/32,10.0.0.0/8)",
     ),
+    cfg.BoolOpt(
+        "routing_enabled",
+        default=False,
+        help="Enable nexthop-based routing for tagged external resources "
+        "(services with a nexthop set)",
+    ),
+    cfg.IntOpt(
+        "routing_proto_id",
+        default=172,
+        help="rtnetlink 'proto' value used to tag routes owned by this "
+        "agent, so route reconciliation never touches unrelated host routes",
+    ),
+    cfg.IntOpt(
+        "dns_resolve_min_interval_seconds",
+        default=30,
+        help="Floor between re-resolutions of a domain's A/AAAA records, "
+        "regardless of the DNS response TTL",
+    ),
+    cfg.StrOpt(
+        "dns_resolvers",
+        default="",
+        help="Comma-separated list of DNS server IPs to use for resolving "
+        "Service.domains (e.g. 1.1.1.1,8.8.8.8); empty uses the system "
+        "resolver (/etc/resolv.conf). For domain-based routing the "
+        "clients must resolve to the same IPs, so point the OpenVPN "
+        "server config's global 'push \"dhcp-option DNS ...\"' at the "
+        "same resolver",
+    ),
+    cfg.StrOpt(
+        "private_networks",
+        default="",
+        help="Comma-separated CIDR blocks of the private networks the "
+        "OpenVPN server config already pushes to every client "
+        "(e.g. 10.0.0.0/8,172.16.0.0/12); service destinations inside "
+        "them are skipped when generating per-account CCD route pushes",
+    ),
 ]
 
 
