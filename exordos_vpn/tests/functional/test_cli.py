@@ -26,8 +26,8 @@ from exordos_vpn.dm import models
 from exordos_vpn.tests.functional import base
 
 
-class TestServiceCli(base.DbTestCase):
-    """Functional tests for the `service-*` CLI commands.
+class CliTestCase(base.DbTestCase):
+    """Base for CLI functional tests.
 
     `_ensure_config` is monkeypatched to skip oslo_config/config-file
     bootstrap (which needs certificate/OTP settings irrelevant to these
@@ -48,6 +48,10 @@ class TestServiceCli(base.DbTestCase):
 
         monkeypatch.setattr(cli, "_ensure_config", fake_ensure_config)
         return self.runner.invoke(cli.cli, args, catch_exceptions=True)
+
+
+class TestServiceCli(CliTestCase):
+    """Functional tests for the `service-*` CLI commands."""
 
     def _get_service(self, name):
         with contexts.Context().session_manager() as s:
@@ -158,3 +162,44 @@ class TestServiceCli(base.DbTestCase):
         )
         assert remove_result.exit_code == 0, remove_result.output
         assert self._get_service("domain-svc").domains == ["gitlab.com"]
+
+
+class TestAccountOtpRequiredCli(CliTestCase):
+    """Functional tests for the `account-otp-required` toggle command."""
+
+    def _make_account(self, name="alice"):
+        network = models.Network(
+            name="testnet", subnets=[netaddr.IPNetwork("10.8.0.0/24")]
+        )
+        network.insert()
+        account = models.Account(
+            account_name=name,
+            user_id=f"user-{name}",
+            pin="123456",
+            network=network,
+            address_offset=2,
+        )
+        account.insert()
+        return account
+
+    def _get_account(self, name):
+        with contexts.Context().session_manager() as s:
+            return models.Account.objects.get_one(
+                session=s, filters={"account_name": dm_filters.EQ(name)}
+            )
+
+    def test_otp_required_off_and_back_on(self, monkeypatch):
+        account = self._make_account()
+        assert account.otp_required is True
+
+        off_result = self._invoke(monkeypatch, ["account-otp-required", "alice", "off"])
+        assert off_result.exit_code == 0, off_result.output
+        assert "PIN-only" in off_result.output
+        assert self._get_account("alice").otp_required is False
+
+        on_result = self._invoke(monkeypatch, ["account-otp-required", "alice", "on"])
+        assert on_result.exit_code == 0, on_result.output
+        # No active OTP device linked — the operator must be warned the
+        # account is now locked out until one is issued.
+        assert "no active OTP" in on_result.output
+        assert self._get_account("alice").otp_required is True

@@ -152,6 +152,9 @@ class Account(CommonModel):
         types.TypedList(types.String()),
         default=[],
     )
+    # When False, login takes the whole password as the PIN (no OTP
+    # segment, no OTP device needed) — see AuthController.create.
+    otp_required = properties.property(types.Boolean(), default=True)
 
     @classmethod
     def allocate_address_offset(cls, network, session=None):

@@ -54,11 +54,17 @@ _SENTINEL_CMD = [
 
 @pytest.fixture(scope="session", autouse=True)
 def global_salt():
-    """Register and set the global salt required to hash Account PINs."""
+    """Register and set the secrets required to hash Account PINs and
+    encrypt OTP device secrets at rest."""
     cfg.CONF.register_opts(vpn_config.service_config_opts, c.COMMON_DOMAIN)
     cfg.CONF.set_override(
         "global_salt",
         base64.b64encode(b"test-salt-not-for-prod-use").decode(),
+        group=c.COMMON_DOMAIN,
+    )
+    cfg.CONF.set_override(
+        "otp_encryption_key",
+        "00" * 32,
         group=c.COMMON_DOMAIN,
     )
 
