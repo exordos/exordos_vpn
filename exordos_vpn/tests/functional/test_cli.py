@@ -204,6 +204,39 @@ class TestAccountOtpRequiredCli(CliTestCase):
         assert "no active OTP" in on_result.output
         assert self._get_account("alice").otp_required is True
 
+    def _cached_logins(self, account):
+        with contexts.Context().session_manager() as s:
+            return models.AccountAuthCache.objects.count(
+                session=s, filters={"account": dm_filters.EQ(account)}
+            )
+
+    def test_toggle_clears_auth_cache(self, monkeypatch):
+        """A cached login must not outlive the toggle: e.g. a PIN-only
+        password cached while OTP was off would keep authenticating after
+        OTP is re-enabled."""
+        account = self._make_account()
+        account.update_auth_cache("123456000000")
+        assert self._cached_logins(account) == 1
+
+        result = self._invoke(monkeypatch, ["account-otp-required", "alice", "off"])
+        assert result.exit_code == 0, result.output
+        assert self._cached_logins(account) == 0
+
+        account.update_auth_cache("123456")
+        result = self._invoke(monkeypatch, ["account-otp-required", "alice", "on"])
+        assert result.exit_code == 0, result.output
+        assert self._cached_logins(account) == 0
+
+    def test_noop_toggle_keeps_auth_cache(self, monkeypatch):
+        """Re-running the command with the current value must not kick a
+        (still consistent) cached login."""
+        account = self._make_account()
+        account.update_auth_cache("123456000000")
+
+        result = self._invoke(monkeypatch, ["account-otp-required", "alice", "on"])
+        assert result.exit_code == 0, result.output
+        assert self._cached_logins(account) == 1
+
 
 class TestDepartmentCli(CliTestCase):
     """Functional tests for the `department-*` / `account-department-*`

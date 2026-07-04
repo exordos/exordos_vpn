@@ -631,8 +631,21 @@ def account_otp_required(ctx, account, required):
     session_ctx = ctx.obj["session_ctx"]
     with session_ctx.session_manager() as session:
         acc = _resolve_account(session, account)
-        acc.otp_required = required == "on"
+        new_value = required == "on"
+        changed = acc.otp_required != new_value
+        acc.otp_required = new_value
         acc.save(session=session)
+
+        # A cached login must not outlive the toggle: a PIN-only password
+        # cached while OTP was off would keep authenticating after OTP is
+        # re-enabled (and a cached PIN+OTP one after it's disabled).
+        if changed:
+            auth_cache = models.AccountAuthCache.objects.get_one_or_none(
+                session=session, filters={"account": dm_filters.EQ(acc)}
+            )
+            if auth_cache:
+                auth_cache.delete(session=session)
+                CONSOLE.print("Cached login invalidated.")
 
         CONSOLE.print(
             f"Account {acc.account_name} ({acc.uuid}) OTP requirement: {required}"
