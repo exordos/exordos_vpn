@@ -347,6 +347,19 @@ class TestDepartmentCli(CliTestCase):
         assert "OTP: required" in result.output
         assert "Client IP:" in result.output
 
+    def test_account_network_show_is_deprecated_alias_of_account_show(
+        self, monkeypatch
+    ):
+        self._make_account()
+
+        result = self._invoke(monkeypatch, ["account-network-show", "alice"])
+
+        assert result.exit_code == 0, result.output
+        assert "deprecated" in result.output
+        # Full account-show output, not the old short network-rules one.
+        assert "Effective tags (own + departments):" in result.output
+        assert "OTP devices:" in result.output
+
     def test_account_list_full_shows_departments(self, monkeypatch):
         self._make_account()
         self._invoke(monkeypatch, ["department-create", "engineering", "--tags", "git"])
