@@ -822,29 +822,15 @@ def account_generate_config_cmd(ctx, account, otp_uuid, disable_pbin):
         _account_generate_config(session, account, disable_pbin)
 
 
-@cli.command("account-network-show")
+@cli.command("account-network-show", hidden=True)
 @click.argument("account")
 @click.pass_context
 def account_network_show(ctx, account):
-    """Show network access rules for an account."""
-    _ensure_config(ctx)
-    session_ctx = ctx.obj["session_ctx"]
-    with session_ctx.session_manager() as session:
-        acc = _resolve_account(session, account)
-
-        CONSOLE.print(f"Account: {acc.account_name} ({acc.uuid})")
-        CONSOLE.print(f"Access type: {acc.network_access_type}")
-        tags = acc.network_access_tags or []
-        CONSOLE.print(f"Tags: {', '.join(tags) or '(none)'}")
-
-        dept_names, dept_granted = _account_departments_map(session, account=acc)
-        names = sorted(dept_names.get(acc.uuid, []))
-        effective = set(tags) | dept_granted.get(acc.uuid, set())
-        CONSOLE.print(f"Departments: {', '.join(names) or '(none)'}")
-        CONSOLE.print(
-            f"Effective tags (own + departments): "
-            f"{', '.join(sorted(effective)) or '(none)'}"
-        )
+    """Deprecated alias for account-show."""
+    CONSOLE.print(
+        "[yellow]account-network-show is deprecated, use account-show[/yellow]"
+    )
+    ctx.invoke(account_show, account=account)
 
 
 @cli.command("account-network-reset")

@@ -75,7 +75,6 @@ Global options:
 
 | Command | Description |
 |---|---|
-| `account-network-show <account>` | Show network access rules (own tags, departments, effective tags) |
 | `account-network-reset <account> [--access-type TYPE] [--tags TAGS]` | Full overwrite access type and tags |
 | `account-network-add-tag <account> <tags>` | Add network access tags |
 | `account-network-remove-tag <account> <tags>` | Remove network access tags |
