@@ -49,7 +49,7 @@ class MigrationStep(migrations.AbstarctMigrationStep):
         )
         session.execute("CREATE INDEX idx_networks_updated_at ON networks(updated_at);")
 
-        LOG.warn(
+        LOG.warning(
             "If you had any data - don't forget to set subnets for DEFAULT network!"
         )
 
