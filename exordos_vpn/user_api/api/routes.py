@@ -77,6 +77,31 @@ class NetworkRoute(routes.Route):
     ]
 
 
+class DepartmentRoute(routes.Route):
+    """Handler for /departments/ endpoint."""
+
+    __controller__ = controllers.DepartmentController
+    __allow_methods__ = [
+        routes.FILTER,
+        routes.CREATE,
+        routes.GET,
+        routes.DELETE,
+        routes.UPDATE,
+    ]
+
+
+class AccountDepartmentRoute(routes.Route):
+    """Handler for /account_departments/ endpoint (membership links)."""
+
+    __controller__ = controllers.AccountDepartmentController
+    __allow_methods__ = [
+        routes.FILTER,
+        routes.CREATE,
+        routes.GET,
+        routes.DELETE,
+    ]
+
+
 class ApiEndpointRoute(routes.Route):
     """Handler for /v1/ endpoint."""
 
@@ -90,3 +115,5 @@ class ApiEndpointRoute(routes.Route):
     auth = routes.route(AuthRoute)
     services = routes.route(ServiceRoute)
     networks = routes.route(NetworkRoute)
+    departments = routes.route(DepartmentRoute)
+    account_departments = routes.route(AccountDepartmentRoute)

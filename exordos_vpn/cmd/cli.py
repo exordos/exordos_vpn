@@ -96,6 +96,52 @@ def _resolve_network(session, identifier):
     raise SystemExit(1)
 
 
+def _resolve_department(session, identifier):
+    """Resolve a department by UUID or name."""
+    try:
+        uuid.UUID(identifier)
+        is_uuid = True
+    except ValueError:
+        is_uuid = False
+
+    if is_uuid:
+        res = models.Department.objects.get_one_or_none(
+            session=session, filters={"uuid": dm_filters.EQ(identifier)}
+        )
+        if res:
+            return res
+
+    res = models.Department.objects.get_one_or_none(
+        session=session, filters={"name": dm_filters.EQ(identifier)}
+    )
+    if res:
+        return res
+
+    CONSOLE.print(f"[red]Department not found: {identifier}[/red]")
+    raise SystemExit(1)
+
+
+def _department_creates_cycle(session, department, new_parent):
+    """True if making new_parent the parent of department would create a
+    cycle (walks new_parent's ancestor chain looking for department)."""
+    seen = set()
+    current = new_parent
+    while current is not None:
+        if current.uuid == department.uuid:
+            return True
+        if current.uuid in seen:
+            # Pre-existing cycle upstream — refuse to attach to it.
+            return True
+        seen.add(current.uuid)
+        if not current.parent:
+            return False
+        current = models.Department.objects.get_one_or_none(
+            session=session,
+            filters={"uuid": dm_filters.EQ(str(current.parent))},
+        )
+    return False
+
+
 def _resolve_account(session, identifier):
     """Resolve an account by UUID or account_name.
 
@@ -369,6 +415,11 @@ def cli(ctx, config_file, config_dir, output_format):
 )
 @click.option("--tags", default="", help="Comma-separated tags for RESTRICTED access")
 @click.option(
+    "--departments",
+    default="",
+    help="Comma-separated departments (name or UUID) to add the account to",
+)
+@click.option(
     "--network",
     "network_name",
     default="default",
@@ -391,6 +442,7 @@ def account_create(
     pin_length,
     access_type,
     tags,
+    departments,
     network_name,
     disable_pbin,
     no_otp,
@@ -441,6 +493,16 @@ def account_create(
         account.network_access_tags = tag_list
         account.save(session=session)
 
+        # Link to departments (resolved upfront so a typo fails the whole
+        # command before anything is printed/sent)
+        department_names = []
+        for identifier in [d.strip() for d in departments.split(",") if d.strip()]:
+            dept = _resolve_department(session, identifier)
+            models.AccountDepartment(account=account, department=dept).save(
+                session=session
+            )
+            department_names.append(dept.name)
+
         # Resolve OTP device (new account — will create one), unless OTP
         # is disabled for this account: then login is PIN-only and no
         # device is needed at all.
@@ -462,6 +524,8 @@ def account_create(
         CONSOLE.print(f"Account name: {account.account_name}")
         CONSOLE.print(f"Network: {network.name}")
         CONSOLE.print(f"Auth type: {account.auth_type}")
+        if department_names:
+            CONSOLE.print(f"Departments: {', '.join(department_names)}")
         CONSOLE.print()
         _secure_print("[bold]Login:[/bold] " + account.account_name)
         _secure_print("[bold]PIN:[/bold] " + pin, style="bold yellow")
@@ -662,6 +726,23 @@ def account_network_show(ctx, account):
             CONSOLE.print(f"Tags: {', '.join(tags)}")
         else:
             CONSOLE.print("Tags: (none)")
+
+        links = models.AccountDepartment.objects.get_all(
+            session=session, filters={"account": dm_filters.EQ(acc)}
+        )
+        if links:
+            departments = models.Department.objects.get_all(session=session)
+            dept_tags = models.department_effective_tags(departments)
+            granted = set()
+            for link in links:
+                granted |= dept_tags.get(link.department.uuid, set())
+            CONSOLE.print(
+                f"Departments: {', '.join(link.department.name for link in links)}"
+            )
+            CONSOLE.print(
+                f"Effective tags (own + departments): "
+                f"{', '.join(sorted(set(tags) | granted)) or '(none)'}"
+            )
 
 
 @cli.command("account-network-reset")
@@ -1117,6 +1198,249 @@ def network_delete(ctx, network):
             raise SystemExit(1)
         net.delete(session=session)
         CONSOLE.print(f"Network {net.name} ({net.uuid}) deleted")
+
+
+# --- Department commands ---
+
+
+@cli.command("department-create")
+@click.argument("name", type=str.lower)
+@click.option("--parent", default=None, help="Parent department (name or UUID)")
+@click.option(
+    "--tags",
+    default="",
+    help="Comma-separated network access tags granted to member accounts "
+    "(and accounts of child departments)",
+)
+@click.option("--description", default="", help="Department description")
+@click.pass_context
+def department_create(ctx, name, parent, tags, description):
+    """Create a department (org-structure node carrying access tags)."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        parent_dept = _resolve_department(session, parent) if parent else None
+        tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+
+        department = models.Department(
+            name=name,
+            parent=parent_dept.uuid if parent_dept else None,
+            network_access_tags=tag_list,
+            description=description,
+        )
+        try:
+            department.save(session=session)
+        except ra_exceptions.ConflictRecords:
+            CONSOLE.print(f"[red]Error: Department '{name}' already exists.[/red]")
+            raise SystemExit(1)
+
+        CONSOLE.print(f"Department created: {department.uuid}")
+        CONSOLE.print(f"Name: {department.name}")
+        if parent_dept:
+            CONSOLE.print(f"Parent: {parent_dept.name}")
+        if tag_list:
+            CONSOLE.print(f"Tags: {', '.join(tag_list)}")
+
+
+@cli.command("department-list")
+@click.pass_context
+def department_list(ctx):
+    """List departments with their own and effective (inherited) tags."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        departments = models.Department.objects.get_all(session=session)
+        by_uuid = {d.uuid: d for d in departments}
+        effective = models.department_effective_tags(departments)
+        columns = ["uuid", "name", "parent", "tags", "effective_tags", "description"]
+        rows = [
+            (
+                str(d.uuid),
+                d.name,
+                by_uuid[d.parent].name if d.parent and d.parent in by_uuid else "-",
+                ", ".join(d.network_access_tags) if d.network_access_tags else "-",
+                ", ".join(sorted(effective[d.uuid])) if effective[d.uuid] else "-",
+                d.description or "-",
+            )
+            for d in departments
+        ]
+        _print_output(ctx, columns, rows)
+
+
+@cli.command("department-set-parent")
+@click.argument("department")
+@click.argument("parent")
+@click.pass_context
+def department_set_parent(ctx, department, parent):
+    """Move a department under another parent (pass "" to make it a root)."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        dept = _resolve_department(session, department)
+
+        if not parent.strip():
+            dept.parent = None
+            parent_name = "(root)"
+        else:
+            parent_dept = _resolve_department(session, parent)
+            if _department_creates_cycle(session, dept, parent_dept):
+                CONSOLE.print(
+                    f"[red]Error: making '{parent_dept.name}' the parent "
+                    f"of '{dept.name}' would create a cycle.[/red]"
+                )
+                raise SystemExit(1)
+            dept.parent = parent_dept.uuid
+            parent_name = parent_dept.name
+
+        dept.save(session=session)
+        CONSOLE.print(
+            f"Department {dept.name} ({dept.uuid}) parent set to {parent_name}"
+        )
+
+
+@cli.command("department-add-tag")
+@click.argument("department")
+@click.argument("tags")
+@click.pass_context
+def department_add_tag(ctx, department, tags):
+    """Add network access tags to a department."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        dept = _resolve_department(session, department)
+
+        new_tags = [t.strip() for t in tags.split(",") if t.strip()]
+        existing = list(dept.network_access_tags or [])
+        added = [t for t in new_tags if t not in existing]
+        dept.network_access_tags = existing + added
+        dept.save(session=session)
+
+        CONSOLE.print(
+            f"Department {dept.name} ({dept.uuid}) tags added: {', '.join(added)}"
+        )
+        CONSOLE.print(f"Current tags: {', '.join(dept.network_access_tags)}")
+
+
+@cli.command("department-remove-tag")
+@click.argument("department")
+@click.argument("tags")
+@click.pass_context
+def department_remove_tag(ctx, department, tags):
+    """Remove network access tags from a department."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        dept = _resolve_department(session, department)
+
+        remove_tags = [t.strip() for t in tags.split(",") if t.strip()]
+        existing = list(dept.network_access_tags or [])
+        dept.network_access_tags = [t for t in existing if t not in remove_tags]
+        dept.save(session=session)
+
+        CONSOLE.print(
+            f"Department {dept.name} ({dept.uuid}) "
+            f"tags removed: {', '.join(remove_tags)}"
+        )
+        CONSOLE.print(f"Current tags: {', '.join(dept.network_access_tags) or '-'}")
+
+
+@cli.command("department-delete")
+@click.argument("department")
+@click.pass_context
+def department_delete(ctx, department):
+    """Delete a department (refused while it has children or members)."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        dept = _resolve_department(session, department)
+
+        children = models.Department.objects.get_all(
+            session=session, filters={"parent": dm_filters.EQ(str(dept.uuid))}
+        )
+        if children:
+            names = ", ".join(c.name for c in children)
+            CONSOLE.print(
+                f"[red]Error: department has child departments: {names}. "
+                f"Reparent or delete them first.[/red]"
+            )
+            raise SystemExit(1)
+
+        members = models.AccountDepartment.objects.get_all(
+            session=session, filters={"department": dm_filters.EQ(dept)}
+        )
+        if members:
+            names = ", ".join(m.account.account_name for m in members)
+            CONSOLE.print(
+                f"[red]Error: department has member accounts: {names}. "
+                f"Remove them first (account-department-remove).[/red]"
+            )
+            raise SystemExit(1)
+
+        dept.delete(session=session)
+        CONSOLE.print(f"Department {dept.name} ({dept.uuid}) deleted")
+
+
+@cli.command("account-department-add")
+@click.argument("account")
+@click.argument("departments")
+@click.pass_context
+def account_department_add(ctx, account, departments):
+    """Add an account to departments (comma-separated names or UUIDs)."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        acc = _resolve_account(session, account)
+
+        added = []
+        for identifier in [d.strip() for d in departments.split(",") if d.strip()]:
+            dept = _resolve_department(session, identifier)
+            existing = models.AccountDepartment.objects.get_all(
+                session=session,
+                filters={
+                    "account": dm_filters.EQ(acc),
+                    "department": dm_filters.EQ(dept),
+                },
+            )
+            if existing:
+                continue
+            models.AccountDepartment(account=acc, department=dept).save(session=session)
+            added.append(dept.name)
+
+        CONSOLE.print(
+            f"Account {acc.account_name} ({acc.uuid}) "
+            f"added to: {', '.join(added) or '(already a member everywhere)'}"
+        )
+
+
+@cli.command("account-department-remove")
+@click.argument("account")
+@click.argument("departments")
+@click.pass_context
+def account_department_remove(ctx, account, departments):
+    """Remove an account from departments (comma-separated names or UUIDs)."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        acc = _resolve_account(session, account)
+
+        removed = []
+        for identifier in [d.strip() for d in departments.split(",") if d.strip()]:
+            dept = _resolve_department(session, identifier)
+            links = models.AccountDepartment.objects.get_all(
+                session=session,
+                filters={
+                    "account": dm_filters.EQ(acc),
+                    "department": dm_filters.EQ(dept),
+                },
+            )
+            for link in links:
+                link.delete(session=session)
+                removed.append(dept.name)
+
+        CONSOLE.print(
+            f"Account {acc.account_name} ({acc.uuid}) "
+            f"removed from: {', '.join(removed) or '(was not a member)'}"
+        )
 
 
 # --- Service commands ---
