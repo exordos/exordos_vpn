@@ -236,6 +236,27 @@ class AuthController(ra_controllers.Controller):
             )
             return {"status": "ok"}, 200, None, False
 
+        # OTP disabled for this account: the whole password is the PIN —
+        # nothing to split off and no OTP device is required (the account
+        # may not have one at all, e.g. service accounts).
+        if not account.otp_required:
+            if not account.check_pin(password):
+                LOG.info(
+                    "IAM AUDIT: login failed account_name=%s ip=%s reason=%s",
+                    account_name,
+                    ctx.get_user_ip(),
+                    "wrong_pin",
+                )
+                raise AuthVerifyError()
+
+            account.update_auth_cache(password)
+            LOG.info(
+                "IAM AUDIT: login succeeded (otp disabled) account_name=%s ip=%s",
+                account_name,
+                ctx.get_user_ip(),
+            )
+            return {"status": "ok"}, 200, None, False
+
         # Split password: first pin_length chars = PIN, rest = OTP
         pin_length = account.pin_length
         if len(password) < pin_length + 6:

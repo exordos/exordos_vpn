@@ -52,12 +52,13 @@ Global options:
 
 | Command | Description |
 |---|---|
-| `account-create <user_id> [--name NAME] [--pin-length N] [--access-type ALL\|RESTRICTED] [--tags TAGS] [--network NAME\|UUID] [--disable-pbin]` | Create account with PIN, OTP, cert (if configured), and network access rules |
+| `account-create <user_id> [--name NAME] [--pin-length N] [--access-type ALL\|RESTRICTED] [--tags TAGS] [--network NAME\|UUID] [--disable-pbin] [--no-otp]` | Create account with PIN, OTP, cert (if configured), and network access rules |
 | `account-list [--user-id UID]` | List accounts |
 | `account-disable <account>` | Disable account |
 | `account-generate-config <account> [--otp-uuid UUID] [--disable-pbin]` | Generate .ovpn config |
-| `account-reset <account> [--pin-length N] [--disable-pbin]` | Reset PIN and OTP (with confirmation) |
+| `account-reset <account> [--pin-length N] [--disable-pbin]` | Reset PIN and OTP (with confirmation; PIN only if OTP is off) |
 | `account-set-otp <account> [--otp-uuid UUID]` | Replace OTP device for account |
+| `account-otp-required <account> <on\|off>` | Toggle OTP requirement: with `off` the whole VPN password is the PIN (no OTP code, no OTP device needed) |
 
 ### Network
 
@@ -81,6 +82,8 @@ Global options:
 ### OTP
 
 One OTP device is shared across all accounts of the same `user_id`.
+
+OTP can be disabled per account (`account-create --no-otp` / `account-otp-required <account> off`): login then takes the whole password as the PIN and needs no OTP device at all (e.g. service accounts). This drops password auth to a single factor — prefer `cert_and_password` auth for such accounts so the client TLS certificate compensates.
 
 | Command | Description |
 |---|---|

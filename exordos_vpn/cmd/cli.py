@@ -376,9 +376,24 @@ def cli(ctx, config_file, config_dir, output_format):
     help="Network name or UUID to assign this account to",
 )
 @click.option("--disable-pbin", is_flag=True, default=False)
+@click.option(
+    "--no-otp",
+    is_flag=True,
+    default=False,
+    help="Disable OTP for this account: login is PIN-only and no OTP "
+    "device is issued (can be toggled later with account-otp-required)",
+)
 @click.pass_context
 def account_create(
-    ctx, user_id, name, pin_length, access_type, tags, network_name, disable_pbin
+    ctx,
+    user_id,
+    name,
+    pin_length,
+    access_type,
+    tags,
+    network_name,
+    disable_pbin,
+    no_otp,
 ):
     """Create a new account."""
     _ensure_config(ctx)
@@ -396,6 +411,7 @@ def account_create(
         kwargs["auth_type"] = auth_type
         kwargs["account_name"] = name or user_id
         kwargs["network"] = network
+        kwargs["otp_required"] = not no_otp
 
         if not kwargs["account_name"].startswith(user_id):
             kwargs["account_name"] = f"{user_id}_{kwargs['account_name']}"
@@ -425,8 +441,13 @@ def account_create(
         account.network_access_tags = tag_list
         account.save(session=session)
 
-        # Resolve OTP device (new account — will create one)
-        device, otp_created = _resolve_otp_device(session, account)
+        # Resolve OTP device (new account — will create one), unless OTP
+        # is disabled for this account: then login is PIN-only and no
+        # device is needed at all.
+        device = None
+        otp_created = False
+        if not no_otp:
+            device, otp_created = _resolve_otp_device(session, account)
 
         otp_uri = None
         otp_secret = None
@@ -446,17 +467,16 @@ def account_create(
         _secure_print("[bold]PIN:[/bold] " + pin, style="bold yellow")
         if cert:
             CONSOLE.print(f"Certificate uuid: {cert.uuid}")
-        if otp_created:
+        if no_otp:
+            CONSOLE.print("[bold]OTP:[/bold] disabled — login with PIN only")
+        elif otp_created:
             CONSOLE.print(f"OTP device created: {device.uuid}")
-        else:
-            CONSOLE.print(f"OTP device: {device.uuid} (existing)")
-
-        if otp_created:
             _secure_print("[bold]OTP Secret (base32):[/bold] " + otp_secret)
             _secure_print("[bold]OTP QR Code:[/bold]")
             _print_otp_qrcode(otp_uri)
             CONSOLE.print()
         else:
+            CONSOLE.print(f"OTP device: {device.uuid} (existing)")
             CONSOLE.print("[bold]OTP:[/bold] Use previously issued OTP for VPN")
 
         # Generate config file and send everything to PrivateBin
@@ -493,6 +513,7 @@ def account_list(ctx, user_id):
             "user_id",
             "account_name",
             "auth_type",
+            "otp",
             "status",
             "network",
             "network_access_type",
@@ -505,6 +526,7 @@ def account_list(ctx, user_id):
                 a.user_id,
                 a.account_name,
                 a.auth_type,
+                "required" if a.otp_required else "off",
                 a.status,
                 a.network.name,
                 a.network_access_type or "-",
@@ -528,6 +550,44 @@ def account_disable(ctx, account):
         acc.disable(session=session)
 
         CONSOLE.print(f"Account {acc.uuid} ({acc.account_name}) disabled")
+
+
+@cli.command("account-otp-required")
+@click.argument("account")
+@click.argument("required", type=click.Choice(["on", "off"]))
+@click.pass_context
+def account_otp_required(ctx, account, required):
+    """Toggle the OTP requirement for an account.
+
+    With OTP off the whole VPN password is the PIN (no OTP code appended,
+    no OTP device needed). PIN and OTP devices are left untouched, so
+    turning OTP back on restores the previous PIN+OTP login.
+    """
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        acc = _resolve_account(session, account)
+        acc.otp_required = required == "on"
+        acc.save(session=session)
+
+        CONSOLE.print(
+            f"Account {acc.account_name} ({acc.uuid}) OTP requirement: {required}"
+        )
+        if required == "off":
+            CONSOLE.print(
+                "Login is now PIN-only: the client must enter just the PIN, "
+                "[bold]without[/bold] an OTP code appended."
+            )
+        else:
+            rels = models.AccountOtpDevice.objects.get_all(
+                session=session, filters={"account": dm_filters.EQ(acc)}
+            )
+            if not any(rel.otp_device.status == "ACTIVE" for rel in rels):
+                CONSOLE.print(
+                    "[red]Warning:[/red] this account has no active OTP "
+                    "device, so it cannot log in until one is issued — "
+                    "use account-reset or account-set-otp."
+                )
 
 
 def _account_generate_config(
@@ -888,23 +948,30 @@ def account_reset(ctx, account, pin_length, otp_uuid, disable_pbin):
         if auth_cache:
             auth_cache.delete(session=session)
 
-        # Reset OTP: find or create a device
-        device, otp_created = _resolve_otp_device(session, acc, otp_uuid=otp_uuid)
-        new_secret = pyotp.random_base32()
-        device.otp_secret = crypto.encrypt_otp_secret(new_secret)
-        device.save(session=session)
+        # Reset OTP: find or create a device — unless OTP is disabled for
+        # this account (PIN-only login), where a device would be useless.
+        otp_uri = None
+        new_secret = None
+        if acc.otp_required:
+            device, otp_created = _resolve_otp_device(session, acc, otp_uuid=otp_uuid)
+            new_secret = pyotp.random_base32()
+            device.otp_secret = crypto.encrypt_otp_secret(new_secret)
+            device.save(session=session)
 
-        # Build OTP URI and display
-        otp_uri = pyotp.TOTP(new_secret).provisioning_uri(
-            name=acc.account_name,
-            issuer_name=CONF[c.COMMON_DOMAIN].otp_issuer_name,
-        )
+            # Build OTP URI and display
+            otp_uri = pyotp.TOTP(new_secret).provisioning_uri(
+                name=acc.account_name,
+                issuer_name=CONF[c.COMMON_DOMAIN].otp_issuer_name,
+            )
 
         CONSOLE.print(f"Account {acc.uuid} ({acc.account_name}) reset")
         _secure_print(f"[bold]New PIN:[/bold] {new_pin}", style="bold yellow")
-        _secure_print(f"New OTP secret (base32): {new_secret}")
-        _secure_print("[bold]OTP QR Code:[/bold]")
-        _print_otp_qrcode(otp_uri)
+        if acc.otp_required:
+            _secure_print(f"New OTP secret (base32): {new_secret}")
+            _secure_print("[bold]OTP QR Code:[/bold]")
+            _print_otp_qrcode(otp_uri)
+        else:
+            CONSOLE.print("[bold]OTP:[/bold] disabled — login with PIN only")
 
         # Generate config file and send everything to PrivateBin
         config_file = _account_generate_config(
