@@ -53,7 +53,8 @@ Global options:
 | Command | Description |
 |---|---|
 | `account-create <user_id> [--name NAME] [--pin-length N] [--access-type ALL\|RESTRICTED] [--tags TAGS] [--departments DEPTS] [--network NAME\|UUID] [--disable-pbin] [--no-otp]` | Create account with PIN, OTP, cert (if configured), and network access rules |
-| `account-list [--user-id UID]` | List accounts |
+| `account-list [--user-id UID] [--full]` | List accounts (`--full` adds departments and effective tags) |
+| `account-show <account>` | Show full account info (auth, network, IP, tags, departments, effective tags, OTP devices, certs) |
 | `account-disable <account>` | Disable account |
 | `account-generate-config <account> [--otp-uuid UUID] [--disable-pbin]` | Generate .ovpn config |
 | `account-reset <account> [--pin-length N] [--disable-pbin]` | Reset PIN and OTP (with confirmation; PIN only if OTP is off) |

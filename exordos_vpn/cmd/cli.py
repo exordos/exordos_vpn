@@ -560,10 +560,37 @@ def account_create(
         _pbin_send(disable_pbin, text=credentials_text, config_file=config_file)
 
 
+def _account_departments_map(session, account=None):
+    """Return ({account_uuid: [department names]}, {account_uuid: granted
+    tag set}) for one account or all of them."""
+    departments = models.Department.objects.get_all(session=session)
+    if not departments:
+        return {}, {}
+    link_filters = {"account": dm_filters.EQ(account)} if account else {}
+    links = models.AccountDepartment.objects.get_all(
+        session=session, filters=link_filters
+    )
+    dept_tags = models.department_effective_tags(departments)
+    names, granted = {}, {}
+    for link in links:
+        acc_uuid = link.account.uuid
+        names.setdefault(acc_uuid, []).append(link.department.name)
+        granted.setdefault(acc_uuid, set()).update(
+            dept_tags.get(link.department.uuid, set())
+        )
+    return names, granted
+
+
 @cli.command("account-list")
 @click.option("--user-id", default=None, help="Filter by user ID")
+@click.option(
+    "--full",
+    is_flag=True,
+    default=False,
+    help="Also show departments and effective (own + departments) tags",
+)
 @click.pass_context
-def account_list(ctx, user_id):
+def account_list(ctx, user_id, full):
     """List accounts."""
     _ensure_config(ctx)
     session_ctx = ctx.obj["session_ctx"]
@@ -572,6 +599,9 @@ def account_list(ctx, user_id):
         if user_id:
             filters["user_id"] = dm_filters.EQ(user_id)
         accounts = models.Account.objects.get_all(session=session, filters=filters)
+        dept_names, dept_granted = (
+            _account_departments_map(session) if full else ({}, {})
+        )
         columns = [
             "uuid",
             "user_id",
@@ -582,10 +612,13 @@ def account_list(ctx, user_id):
             "network",
             "network_access_type",
             "tags",
-            "updated_at",
         ]
-        rows = [
-            (
+        if full:
+            columns += ["departments", "effective_tags"]
+        columns.append("updated_at")
+        rows = []
+        for a in accounts:
+            row = [
                 str(a.uuid),
                 a.user_id,
                 a.account_name,
@@ -595,11 +628,78 @@ def account_list(ctx, user_id):
                 a.network.name,
                 a.network_access_type or "-",
                 ", ".join(a.network_access_tags) if a.network_access_tags else "-",
-                a.updated_at.isoformat() if a.updated_at else "-",
-            )
-            for a in accounts
-        ]
+            ]
+            if full:
+                effective = set(a.network_access_tags or []) | dept_granted.get(
+                    a.uuid, set()
+                )
+                row += [
+                    ", ".join(sorted(dept_names.get(a.uuid, []))) or "-",
+                    ", ".join(sorted(effective)) or "-",
+                ]
+            row.append(a.updated_at.isoformat() if a.updated_at else "-")
+            rows.append(tuple(row))
         _print_output(ctx, columns, rows)
+
+
+@cli.command("account-show")
+@click.argument("account")
+@click.pass_context
+def account_show(ctx, account):
+    """Show full information about an account."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        acc = _resolve_account(session, account)
+
+        client_ip = "-"
+        if acc.address_offset:
+            try:
+                ip, _ = acc.network.ip_for_offset(acc.address_offset)
+                client_ip = str(ip)
+            except ValueError:
+                client_ip = "(unresolvable)"
+
+        CONSOLE.print(f"Account: {acc.account_name} ({acc.uuid})")
+        CONSOLE.print(f"User ID: {acc.user_id}")
+        CONSOLE.print(f"Status: {acc.status}")
+        CONSOLE.print(f"Auth type: {acc.auth_type}")
+        CONSOLE.print(
+            f"OTP: {'required' if acc.otp_required else 'off (PIN-only login)'}"
+        )
+        CONSOLE.print(f"PIN length: {acc.pin_length}")
+        CONSOLE.print(f"Network: {acc.network.name}")
+        CONSOLE.print(f"Client IP: {client_ip}")
+        CONSOLE.print(f"Access type: {acc.network_access_type}")
+        CONSOLE.print(f"Tags: {', '.join(acc.network_access_tags or []) or '(none)'}")
+
+        dept_names, dept_granted = _account_departments_map(session, account=acc)
+        names = sorted(dept_names.get(acc.uuid, []))
+        effective = set(acc.network_access_tags or []) | dept_granted.get(
+            acc.uuid, set()
+        )
+        CONSOLE.print(f"Departments: {', '.join(names) or '(none)'}")
+        CONSOLE.print(
+            f"Effective tags (own + departments): "
+            f"{', '.join(sorted(effective)) or '(none)'}"
+        )
+
+        otp_rels = models.AccountOtpDevice.objects.get_all(
+            session=session, filters={"account": dm_filters.EQ(acc)}
+        )
+        devices = ", ".join(
+            f"{rel.otp_device.uuid} ({rel.otp_device.status})" for rel in otp_rels
+        )
+        CONSOLE.print(f"OTP devices: {devices or '(none)'}")
+
+        certs = models.Certificate.objects.get_all(
+            session=session, filters={"account": dm_filters.EQ(acc)}
+        )
+        CONSOLE.print(
+            f"Certificates: {', '.join(str(c.uuid) for c in certs) or '(none)'}"
+        )
+        if acc.updated_at:
+            CONSOLE.print(f"Updated at: {acc.updated_at.isoformat()}")
 
 
 @cli.command("account-disable")
@@ -735,27 +835,16 @@ def account_network_show(ctx, account):
         CONSOLE.print(f"Account: {acc.account_name} ({acc.uuid})")
         CONSOLE.print(f"Access type: {acc.network_access_type}")
         tags = acc.network_access_tags or []
-        if tags:
-            CONSOLE.print(f"Tags: {', '.join(tags)}")
-        else:
-            CONSOLE.print("Tags: (none)")
+        CONSOLE.print(f"Tags: {', '.join(tags) or '(none)'}")
 
-        links = models.AccountDepartment.objects.get_all(
-            session=session, filters={"account": dm_filters.EQ(acc)}
+        dept_names, dept_granted = _account_departments_map(session, account=acc)
+        names = sorted(dept_names.get(acc.uuid, []))
+        effective = set(tags) | dept_granted.get(acc.uuid, set())
+        CONSOLE.print(f"Departments: {', '.join(names) or '(none)'}")
+        CONSOLE.print(
+            f"Effective tags (own + departments): "
+            f"{', '.join(sorted(effective)) or '(none)'}"
         )
-        if links:
-            departments = models.Department.objects.get_all(session=session)
-            dept_tags = models.department_effective_tags(departments)
-            granted = set()
-            for link in links:
-                granted |= dept_tags.get(link.department.uuid, set())
-            CONSOLE.print(
-                f"Departments: {', '.join(link.department.name for link in links)}"
-            )
-            CONSOLE.print(
-                f"Effective tags (own + departments): "
-                f"{', '.join(sorted(set(tags) | granted)) or '(none)'}"
-            )
 
 
 @cli.command("account-network-reset")

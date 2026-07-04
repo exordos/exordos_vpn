@@ -324,6 +324,44 @@ class TestDepartmentCli(CliTestCase):
         assert remove.exit_code == 0, remove.output
         assert self._membership_count(account) == 0
 
+    def test_account_show_displays_departments_and_effective_tags(self, monkeypatch):
+        account = self._make_account()
+        with contexts.Context().session_manager() as s:
+            account = models.Account.objects.get_one(
+                session=s, filters={"account_name": dm_filters.EQ("alice")}
+            )
+            account.network_access_tags = ["own"]
+            account.save(session=s)
+        self._invoke(monkeypatch, ["department-create", "org", "--tags", "web"])
+        self._invoke(
+            monkeypatch,
+            ["department-create", "backend", "--parent", "org", "--tags", "git"],
+        )
+        self._invoke(monkeypatch, ["account-department-add", "alice", "backend"])
+
+        result = self._invoke(monkeypatch, ["account-show", "alice"])
+
+        assert result.exit_code == 0, result.output
+        assert "Departments: backend" in result.output
+        assert "Effective tags (own + departments): git, own, web" in result.output
+        assert "OTP: required" in result.output
+        assert "Client IP:" in result.output
+
+    def test_account_list_full_shows_departments(self, monkeypatch):
+        self._make_account()
+        self._invoke(monkeypatch, ["department-create", "engineering", "--tags", "git"])
+        self._invoke(monkeypatch, ["account-department-add", "alice", "engineering"])
+
+        result = self._invoke(
+            monkeypatch, ["--format", "json", "account-list", "--full"]
+        )
+
+        assert result.exit_code == 0, result.output
+        rows = json.loads(result.output)
+        row = next(r for r in rows if r["account_name"] == "alice")
+        assert row["departments"] == "engineering"
+        assert row["effective_tags"] == "git"
+
     def test_department_delete_refused_with_members_then_ok(self, monkeypatch):
         self._make_account()
         self._invoke(monkeypatch, ["department-create", "engineering"])
