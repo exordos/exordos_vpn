@@ -49,6 +49,7 @@ dependencies = [
     "qrcode>=8.0,<8.1",  # BSD License (BSD-3-Clause)
     "Pillow>=11.0.0,<12.0.0",  # HPND
     "click>=8.0.0,<9.0.0",  # BSD License (BSD-3-Clause)
+    "dnspython>=2.6.0,<3.0.0",  # ISC License
 ]
 
 [project.urls]

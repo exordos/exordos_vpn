@@ -273,7 +273,11 @@ class Service(CommonModel, models.ModelWithNameDesc):
 
     subnets = properties.property(
         types.TypedList(types_network.IpWithMask()),
-        required=True,
+        default=[],
+    )
+    domains = properties.property(
+        types.TypedList(types_network.Hostname()),
+        default=[],
     )
     tags = properties.property(
         types.TypedList(types.String()),
@@ -283,6 +287,21 @@ class Service(CommonModel, models.ModelWithNameDesc):
         types.TypedList(firewall_kinds.FirewallKindSelectorType),
         default=lambda: [firewall_kinds.FirewallKindAny()],
     )
+    # Gateway IP of a separate proxy/router box; when set, traffic to this
+    # service's subnets/domains is routed via this nexthop instead of the
+    # VPN gateway's own default route (see server_agent._reconcile_routes).
+    nexthop = properties.property(
+        types.AllowNone(types_network.IPAddress()),
+        default=None,
+    )
+
+    def validate(self):
+        """Runs on construction and on every UPDATE (restalchemy calls it
+        from Model.pour and orm update()), so a service can't lose its last
+        subnet/domain through service-reset/remove-* either."""
+        super().validate()
+        if not self.subnets and not self.domains:
+            raise ValueError("Service requires at least one of subnets/domains")
 
 
 class OtpDevice(CommonModel):

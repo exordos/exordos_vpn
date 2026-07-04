@@ -119,9 +119,41 @@ class IptablesNetns:
         out = self.run(server_agent.IPTABLES_BIN_PATH, "-t", "filter", "-S", chain_name)
         return out.splitlines()
 
+    def get_routes(self, proto_id):
+        out = self.run(
+            server_agent.IP_BIN_PATH, "route", "show", "proto", str(proto_id)
+        )
+        return out.splitlines()
+
+    def get_ipset_members(self, name):
+        out = self.run(server_agent.IPSET_BIN_PATH, "list", name, "-output", "plain")
+        members = set()
+        in_members = False
+        for line in out.splitlines():
+            if line.startswith("Members:"):
+                in_members = True
+                continue
+            if in_members and line.strip():
+                members.add(line.strip())
+        return members
+
     def mutating_calls(self):
-        """Calls issued since the last reset that change firewall state."""
-        mutating_flags = {"-N", "-X", "-F", "-A", "-I", "-D"}
+        """Calls issued since the last reset that change firewall/route/ipset state."""
+        mutating_flags = {
+            "-N",
+            "-X",
+            "-F",
+            "-A",
+            "-I",
+            "-D",  # iptables
+            "replace",
+            "del",  # ip route
+            "create",
+            "add",
+            "destroy",
+            "flush",
+            "swap",  # ipset
+        }
         return [c for c in self.calls if mutating_flags & set(c)]
 
     def reset_calls(self):
@@ -167,10 +199,15 @@ def iptables_netns(monkeypatch):
         pytest.fail(f"Failed to prepare iptables netns: {e}", pytrace=False)
 
     calls = []
-    iptables_bins = {server_agent.IPTABLES_BIN_PATH, server_agent.IPTABLES_SAVE_BIN}
+    intercepted_bins = {
+        server_agent.IPTABLES_BIN_PATH,
+        server_agent.IPTABLES_SAVE_BIN,
+        server_agent.IP_BIN_PATH,
+        server_agent.IPSET_BIN_PATH,
+    }
 
     def netns_run(cmd, *args, **kwargs):
-        if cmd and cmd[0] in iptables_bins:
+        if cmd and cmd[0] in intercepted_bins:
             calls.append(list(cmd))
             cmd = _nsenter_prefix(inner_pid) + list(cmd)
         return real_run(cmd, *args, **kwargs)

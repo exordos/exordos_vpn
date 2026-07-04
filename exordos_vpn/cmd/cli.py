@@ -1059,8 +1059,23 @@ def network_delete(ctx, network):
 @click.argument("name", type=str.lower)
 @click.option(
     "--subnets",
-    required=True,
-    help="Comma-separated list of subnets (e.g. 10.0.0.0/8,172.16.0.0/12)",
+    default="",
+    help="Comma-separated list of subnets (e.g. 10.0.0.0/8,172.16.0.0/12). "
+    "Required unless --domains is given.",
+)
+@click.option(
+    "--domains",
+    default="",
+    help="Comma-separated list of domains to resolve into an ipset "
+    "(e.g. github.com,api.github.com). Required unless --subnets is given.",
+)
+@click.option(
+    "--nexthop",
+    default=None,
+    help="Gateway IP of a separate proxy/router box; when set, traffic to "
+    "this service's subnets/domains is routed via this nexthop instead of "
+    "the VPN gateway's own default route (requires routing_enabled on the "
+    "server agent)",
 )
 @click.option(
     "--tags", default="", help="Comma-separated tags (e.g. finance,engineering)"
@@ -1074,7 +1089,7 @@ def network_delete(ctx, network):
     "(e.g. 'any,tcp:80-443,udp:53' or empty for any)",
 )
 @click.pass_context
-def service_create(ctx, name, subnets, tags, description, kinds):
+def service_create(ctx, name, subnets, domains, nexthop, tags, description, kinds):
     """Create a new service."""
     _ensure_config(ctx)
     session_ctx = ctx.obj["session_ctx"]
@@ -1082,16 +1097,20 @@ def service_create(ctx, name, subnets, tags, description, kinds):
         subnet_list = [
             netaddr.IPNetwork(s.strip()) for s in subnets.split(",") if s.strip()
         ]
+        domain_list = [d.strip() for d in domains.split(",") if d.strip()]
         tag_list = [t.strip() for t in tags.split(",") if t.strip()]
         kind_list = _parse_kinds(kinds)
 
         kwargs = {}
         if kind_list:
             kwargs["kinds"] = kind_list
+        if nexthop:
+            kwargs["nexthop"] = netaddr.IPAddress(nexthop)
 
         service = models.Service(
             name=name,
             subnets=subnet_list,
+            domains=domain_list,
             tags=tag_list,
             description=description,
             **kwargs,
@@ -1100,7 +1119,12 @@ def service_create(ctx, name, subnets, tags, description, kinds):
 
         CONSOLE.print(f"Service created with uuid: {service.uuid}")
         CONSOLE.print(f"Name: {service.name}")
-        CONSOLE.print(f"Subnets: {subnets}")
+        if service.subnets:
+            CONSOLE.print(f"Subnets: {', '.join(str(s) for s in service.subnets)}")
+        if service.domains:
+            CONSOLE.print(f"Domains: {', '.join(service.domains)}")
+        if service.nexthop:
+            CONSOLE.print(f"Nexthop: {service.nexthop}")
         if service.tags:
             CONSOLE.print(f"Tags: {', '.join(service.tags)}")
         if service.description:
@@ -1118,12 +1142,23 @@ def service_list(ctx):
     session_ctx = ctx.obj["session_ctx"]
     with session_ctx.session_manager() as session:
         services = models.Service.objects.get_all(session=session)
-        columns = ["uuid", "name", "subnets", "tags", "description", "kinds"]
+        columns = [
+            "uuid",
+            "name",
+            "subnets",
+            "domains",
+            "nexthop",
+            "tags",
+            "description",
+            "kinds",
+        ]
         rows = [
             (
                 str(s.uuid),
                 s.name,
-                ", ".join(str(i) for i in s.subnets),
+                ", ".join(str(i) for i in s.subnets) if s.subnets else "-",
+                ", ".join(s.domains) if s.domains else "-",
+                str(s.nexthop) if s.nexthop else "-",
                 ", ".join(s.tags) if s.tags else "-",
                 s.description or "-",
                 ", ".join(k.to_str() for k in s.kinds) if s.kinds else "-",
@@ -1141,6 +1176,17 @@ def service_list(ctx):
     default=None,
     help="Comma-separated list of subnets (full overwrite)",
 )
+@click.option(
+    "--domains",
+    default=None,
+    help="Comma-separated list of domains (full overwrite)",
+)
+@click.option(
+    "--nexthop",
+    default=None,
+    help="Gateway IP to route this service's traffic via (pass an empty "
+    "string to clear it back to normal routing)",
+)
 @click.option("--tags", default=None, help="Comma-separated tags (full overwrite)")
 @click.option("--description", default=None, help="Service description")
 @click.option(
@@ -1151,7 +1197,7 @@ def service_list(ctx):
     "(e.g. 'any,tcp:80-443,udp:53' or empty for any)",
 )
 @click.pass_context
-def service_reset(ctx, uuid, name, subnets, tags, description, kinds):
+def service_reset(ctx, uuid, name, subnets, domains, nexthop, tags, description, kinds):
     """Reset service fields (full overwrite for each specified option)."""
     _ensure_config(ctx)
     session_ctx = ctx.obj["session_ctx"]
@@ -1165,6 +1211,10 @@ def service_reset(ctx, uuid, name, subnets, tags, description, kinds):
             service.subnets = [
                 netaddr.IPNetwork(s.strip()) for s in subnets.split(",") if s.strip()
             ]
+        if domains is not None:
+            service.domains = [d.strip() for d in domains.split(",") if d.strip()]
+        if nexthop is not None:
+            service.nexthop = netaddr.IPAddress(nexthop) if nexthop.strip() else None
         if tags is not None:
             service.tags = [t.strip() for t in tags.split(",") if t.strip()]
         if description is not None:
@@ -1175,7 +1225,9 @@ def service_reset(ctx, uuid, name, subnets, tags, description, kinds):
         service.save(session=session)
 
         CONSOLE.print(f"Service {service.name} ({service.uuid}) updated")
-        CONSOLE.print(f"Subnets: {', '.join(str(i) for i in service.subnets)}")
+        CONSOLE.print(f"Subnets: {', '.join(str(i) for i in service.subnets) or '-'}")
+        CONSOLE.print(f"Domains: {', '.join(service.domains) or '-'}")
+        CONSOLE.print(f"Nexthop: {service.nexthop or '-'}")
         CONSOLE.print(f"Tags: {', '.join(service.tags) or '(none)'}")
         if service.description:
             CONSOLE.print(f"Description: {service.description}")
@@ -1236,6 +1288,54 @@ def service_remove_subnet(ctx, uuid, subnets):
             f"subnets removed: {', '.join(str(s) for s in remove_subnets)}"
         )
         CONSOLE.print(f"Current subnets: {', '.join(str(i) for i in service.subnets)}")
+
+
+@cli.command("service-add-domain")
+@click.argument("uuid")
+@click.argument("domains")
+@click.pass_context
+def service_add_domain(ctx, uuid, domains):
+    """Add domains to a service."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        filters = {"uuid": dm_filters.EQ(uuid)}
+        service = models.Service.objects.get_one(session=session, filters=filters)
+
+        new_domains = [d.strip() for d in domains.split(",") if d.strip()]
+        existing = list(service.domains or [])
+        added = [d for d in new_domains if d not in existing]
+        service.domains = existing + added
+        service.save(session=session)
+
+        CONSOLE.print(
+            f"Service {service.name} ({service.uuid}) domains added: {', '.join(added)}"
+        )
+        CONSOLE.print(f"Current domains: {', '.join(service.domains)}")
+
+
+@cli.command("service-remove-domain")
+@click.argument("uuid")
+@click.argument("domains")
+@click.pass_context
+def service_remove_domain(ctx, uuid, domains):
+    """Remove domains from a service."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        filters = {"uuid": dm_filters.EQ(uuid)}
+        service = models.Service.objects.get_one(session=session, filters=filters)
+
+        remove_domains = [d.strip() for d in domains.split(",") if d.strip()]
+        existing = list(service.domains or [])
+        service.domains = [d for d in existing if d not in remove_domains]
+        service.save(session=session)
+
+        CONSOLE.print(
+            f"Service {service.name} ({service.uuid}) "
+            f"domains removed: {', '.join(remove_domains)}"
+        )
+        CONSOLE.print(f"Current domains: {', '.join(service.domains) or '-'}")
 
 
 @cli.command("service-add-tag")
