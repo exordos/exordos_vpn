@@ -97,6 +97,31 @@ def _resolve_network(session, identifier):
     raise SystemExit(1)
 
 
+def _resolve_service(session, identifier):
+    """Resolve a service by UUID or name."""
+    try:
+        uuid.UUID(identifier)
+        is_uuid = True
+    except ValueError:
+        is_uuid = False
+
+    if is_uuid:
+        res = models.Service.objects.get_one_or_none(
+            session=session, filters={"uuid": dm_filters.EQ(identifier)}
+        )
+        if res:
+            return res
+
+    res = models.Service.objects.get_one_or_none(
+        session=session, filters={"name": dm_filters.EQ(identifier)}
+    )
+    if res:
+        return res
+
+    CONSOLE.print(f"[red]Service not found: {identifier}[/red]")
+    raise SystemExit(1)
+
+
 def _resolve_department(session, identifier):
     """Resolve a department by UUID or name."""
     try:
@@ -1746,7 +1771,7 @@ def service_list(ctx):
 
 
 @cli.command("service-reset")
-@click.argument("uuid")
+@click.argument("service")
 @click.option("--name", default=None, help="New service name")
 @click.option(
     "--subnets",
@@ -1774,13 +1799,14 @@ def service_list(ctx):
     "(e.g. 'any,tcp:80-443,udp:53' or empty for any)",
 )
 @click.pass_context
-def service_reset(ctx, uuid, name, subnets, domains, nexthop, tags, description, kinds):
+def service_reset(
+    ctx, service, name, subnets, domains, nexthop, tags, description, kinds
+):
     """Reset service fields (full overwrite for each specified option)."""
     _ensure_config(ctx)
     session_ctx = ctx.obj["session_ctx"]
     with session_ctx.session_manager() as session:
-        filters = {"uuid": dm_filters.EQ(uuid)}
-        service = models.Service.objects.get_one(session=session, filters=filters)
+        service = _resolve_service(session, service)
 
         if name is not None:
             service.name = name
@@ -1815,16 +1841,15 @@ def service_reset(ctx, uuid, name, subnets, domains, nexthop, tags, description,
 
 
 @cli.command("service-add-subnet")
-@click.argument("uuid")
+@click.argument("service")
 @click.argument("subnets")
 @click.pass_context
-def service_add_subnet(ctx, uuid, subnets):
+def service_add_subnet(ctx, service, subnets):
     """Add subnets to a service."""
     _ensure_config(ctx)
     session_ctx = ctx.obj["session_ctx"]
     with session_ctx.session_manager() as session:
-        filters = {"uuid": dm_filters.EQ(uuid)}
-        service = models.Service.objects.get_one(session=session, filters=filters)
+        service = _resolve_service(session, service)
 
         new_subnets = [
             netaddr.IPNetwork(s.strip()) for s in subnets.split(",") if s.strip()
@@ -1842,16 +1867,15 @@ def service_add_subnet(ctx, uuid, subnets):
 
 
 @cli.command("service-remove-subnet")
-@click.argument("uuid")
+@click.argument("service")
 @click.argument("subnets")
 @click.pass_context
-def service_remove_subnet(ctx, uuid, subnets):
+def service_remove_subnet(ctx, service, subnets):
     """Remove subnets from a service."""
     _ensure_config(ctx)
     session_ctx = ctx.obj["session_ctx"]
     with session_ctx.session_manager() as session:
-        filters = {"uuid": dm_filters.EQ(uuid)}
-        service = models.Service.objects.get_one(session=session, filters=filters)
+        service = _resolve_service(session, service)
 
         remove_subnets = {
             netaddr.IPNetwork(s.strip()) for s in subnets.split(",") if s.strip()
@@ -1868,16 +1892,15 @@ def service_remove_subnet(ctx, uuid, subnets):
 
 
 @cli.command("service-add-domain")
-@click.argument("uuid")
+@click.argument("service")
 @click.argument("domains")
 @click.pass_context
-def service_add_domain(ctx, uuid, domains):
+def service_add_domain(ctx, service, domains):
     """Add domains to a service."""
     _ensure_config(ctx)
     session_ctx = ctx.obj["session_ctx"]
     with session_ctx.session_manager() as session:
-        filters = {"uuid": dm_filters.EQ(uuid)}
-        service = models.Service.objects.get_one(session=session, filters=filters)
+        service = _resolve_service(session, service)
 
         new_domains = [d.strip() for d in domains.split(",") if d.strip()]
         existing = list(service.domains or [])
@@ -1892,16 +1915,15 @@ def service_add_domain(ctx, uuid, domains):
 
 
 @cli.command("service-remove-domain")
-@click.argument("uuid")
+@click.argument("service")
 @click.argument("domains")
 @click.pass_context
-def service_remove_domain(ctx, uuid, domains):
+def service_remove_domain(ctx, service, domains):
     """Remove domains from a service."""
     _ensure_config(ctx)
     session_ctx = ctx.obj["session_ctx"]
     with session_ctx.session_manager() as session:
-        filters = {"uuid": dm_filters.EQ(uuid)}
-        service = models.Service.objects.get_one(session=session, filters=filters)
+        service = _resolve_service(session, service)
 
         remove_domains = [d.strip() for d in domains.split(",") if d.strip()]
         existing = list(service.domains or [])
@@ -1915,17 +1937,37 @@ def service_remove_domain(ctx, uuid, domains):
         CONSOLE.print(f"Current domains: {', '.join(service.domains) or '-'}")
 
 
+@cli.command("service-set-nexthop")
+@click.argument("service")
+@click.argument("nexthop")
+@click.pass_context
+def service_set_nexthop(ctx, service, nexthop):
+    """Route the service's traffic via a nexthop gateway IP (pass ""
+    to clear it back to normal routing)."""
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        service = _resolve_service(session, service)
+
+        service.nexthop = netaddr.IPAddress(nexthop) if nexthop.strip() else None
+        service.save(session=session)
+
+        CONSOLE.print(
+            f"Service {service.name} ({service.uuid}) nexthop set to "
+            f"{service.nexthop or '(none — normal routing)'}"
+        )
+
+
 @cli.command("service-add-tag")
-@click.argument("uuid")
+@click.argument("service")
 @click.argument("tags")
 @click.pass_context
-def service_add_tag(ctx, uuid, tags):
+def service_add_tag(ctx, service, tags):
     """Add tags to a service."""
     _ensure_config(ctx)
     session_ctx = ctx.obj["session_ctx"]
     with session_ctx.session_manager() as session:
-        filters = {"uuid": dm_filters.EQ(uuid)}
-        service = models.Service.objects.get_one(session=session, filters=filters)
+        service = _resolve_service(session, service)
 
         new_tags = [t.strip() for t in tags.split(",") if t.strip()]
         existing = list(service.tags or [])
@@ -1940,16 +1982,15 @@ def service_add_tag(ctx, uuid, tags):
 
 
 @cli.command("service-remove-tag")
-@click.argument("uuid")
+@click.argument("service")
 @click.argument("tags")
 @click.pass_context
-def service_remove_tag(ctx, uuid, tags):
+def service_remove_tag(ctx, service, tags):
     """Remove tags from a service."""
     _ensure_config(ctx)
     session_ctx = ctx.obj["session_ctx"]
     with session_ctx.session_manager() as session:
-        filters = {"uuid": dm_filters.EQ(uuid)}
-        service = models.Service.objects.get_one(session=session, filters=filters)
+        service = _resolve_service(session, service)
 
         remove_tags = [t.strip() for t in tags.split(",") if t.strip()]
         existing = list(service.tags or [])
@@ -1964,16 +2005,15 @@ def service_remove_tag(ctx, uuid, tags):
 
 
 @cli.command("service-add-kind")
-@click.argument("uuid")
+@click.argument("service")
 @click.argument("kinds")
 @click.pass_context
-def service_add_kind(ctx, uuid, kinds):
+def service_add_kind(ctx, service, kinds):
     """Add firewall kinds to a service."""
     _ensure_config(ctx)
     session_ctx = ctx.obj["session_ctx"]
     with session_ctx.session_manager() as session:
-        filters = {"uuid": dm_filters.EQ(uuid)}
-        service = models.Service.objects.get_one(session=session, filters=filters)
+        service = _resolve_service(session, service)
 
         new_kinds = _parse_kinds(kinds)
         existing = list(service.kinds or [])
@@ -1990,16 +2030,15 @@ def service_add_kind(ctx, uuid, kinds):
 
 
 @cli.command("service-remove-kind")
-@click.argument("uuid")
+@click.argument("service")
 @click.argument("kinds")
 @click.pass_context
-def service_remove_kind(ctx, uuid, kinds):
+def service_remove_kind(ctx, service, kinds):
     """Remove firewall kinds from a service."""
     _ensure_config(ctx)
     session_ctx = ctx.obj["session_ctx"]
     with session_ctx.session_manager() as session:
-        filters = {"uuid": dm_filters.EQ(uuid)}
-        service = models.Service.objects.get_one(session=session, filters=filters)
+        service = _resolve_service(session, service)
 
         remove_kinds = _parse_kinds(kinds)
         existing = list(service.kinds or [])
@@ -2017,15 +2056,14 @@ def service_remove_kind(ctx, uuid, kinds):
 
 
 @cli.command("service-delete")
-@click.argument("uuid")
+@click.argument("service")
 @click.pass_context
-def service_delete(ctx, uuid):
+def service_delete(ctx, service):
     """Delete a service."""
     _ensure_config(ctx)
     session_ctx = ctx.obj["session_ctx"]
     with session_ctx.session_manager() as session:
-        filters = {"uuid": dm_filters.EQ(uuid)}
-        service = models.Service.objects.get_one(session=session, filters=filters)
+        service = _resolve_service(session, service)
         service.delete(session=session)
 
         CONSOLE.print(f"Service {service.name} ({service.uuid}) deleted")

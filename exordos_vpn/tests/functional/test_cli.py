@@ -124,6 +124,42 @@ class TestServiceCli(CliTestCase):
         refreshed = self._get_service("reset-svc")
         assert refreshed.nexthop is None
 
+    def test_service_reset_accepts_name(self, monkeypatch):
+        service = models.Service(
+            name="named-svc", subnets=[netaddr.IPNetwork("172.16.0.0/24")]
+        )
+        service.insert()
+
+        result = self._invoke(
+            monkeypatch,
+            ["service-reset", "named-svc", "--tags", "web"],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert self._get_service("named-svc").tags == ["web"]
+
+    def test_service_not_found_reports_error(self, monkeypatch):
+        result = self._invoke(monkeypatch, ["service-reset", "no-such-svc"])
+
+        assert result.exit_code != 0
+        assert "Service not found: no-such-svc" in result.output
+
+    def test_service_set_nexthop_and_clear(self, monkeypatch):
+        service = models.Service(
+            name="hop-svc", subnets=[netaddr.IPNetwork("172.16.0.0/24")]
+        )
+        service.insert()
+
+        result = self._invoke(
+            monkeypatch, ["service-set-nexthop", "hop-svc", "127.0.0.5"]
+        )
+        assert result.exit_code == 0, result.output
+        assert str(self._get_service("hop-svc").nexthop) == "127.0.0.5"
+
+        result = self._invoke(monkeypatch, ["service-set-nexthop", "hop-svc", ""])
+        assert result.exit_code == 0, result.output
+        assert self._get_service("hop-svc").nexthop is None
+
     def test_service_cannot_lose_last_subnet_and_domain(self, monkeypatch):
         """Service.validate() runs on UPDATE too, so remove-*/reset can't
         strip the last subnet/domain and leave an empty service behind."""

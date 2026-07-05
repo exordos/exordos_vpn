@@ -117,22 +117,23 @@ OTP can be disabled per account (`account-create --no-otp` / `account-otp-requir
 
 ### Service
 
-A service needs at least one of `--subnets`/`--domains`. See [External resources / routing](#external-resources--routing) for `--domains`/`--nexthop`.
+A service needs at least one of `--subnets`/`--domains`. See [External resources / routing](#external-resources--routing) for `--domains`/`--nexthop`. `<service>` accepts a name or a UUID.
 
 | Command | Description |
 |---|---|
 | `service-create <name> [--subnets SUBNETS] [--domains DOMAINS] [--nexthop IP] [--tags TAGS] [--description TEXT] [--kinds KINDS]` | Create service |
 | `service-list` | List services |
-| `service-reset <uuid> [--name NAME] [--subnets SUBNETS] [--domains DOMAINS] [--nexthop IP] [--tags TAGS] [--description TEXT] [--kinds KINDS]` | Overwrite service fields (`--nexthop ""` clears it) |
-| `service-add-subnet <uuid> <subnets>` | Add subnets |
-| `service-remove-subnet <uuid> <subnets>` | Remove subnets |
-| `service-add-domain <uuid> <domains>` | Add domains |
-| `service-remove-domain <uuid> <domains>` | Remove domains |
-| `service-add-tag <uuid> <tags>` | Add tags |
-| `service-remove-tag <uuid> <tags>` | Remove tags |
-| `service-add-kind <uuid> <kinds>` | Add firewall kinds |
-| `service-remove-kind <uuid> <kinds>` | Remove firewall kinds |
-| `service-delete <uuid>` | Delete service |
+| `service-reset <service> [--name NAME] [--subnets SUBNETS] [--domains DOMAINS] [--nexthop IP] [--tags TAGS] [--description TEXT] [--kinds KINDS]` | Overwrite service fields (`--nexthop ""` clears it) |
+| `service-set-nexthop <service> <nexthop>` | Route the service via a nexthop gateway IP (`""` clears it back to normal routing) |
+| `service-add-subnet <service> <subnets>` | Add subnets |
+| `service-remove-subnet <service> <subnets>` | Remove subnets |
+| `service-add-domain <service> <domains>` | Add domains |
+| `service-remove-domain <service> <domains>` | Remove domains |
+| `service-add-tag <service> <tags>` | Add tags |
+| `service-remove-tag <service> <tags>` | Remove tags |
+| `service-add-kind <service> <kinds>` | Add firewall kinds |
+| `service-remove-kind <service> <kinds>` | Remove firewall kinds |
+| `service-delete <service>` | Delete service |
 
 ### PrivateBin Delivery
 
@@ -208,6 +209,7 @@ By default a `Service` only controls *access* (which tagged accounts may reach w
 
 ```bash
 exordos-vpn-cli service-create git-via-eu --domains github.com,api.github.com --nexthop 203.0.113.10 --tags git
+exordos-vpn-cli service-set-nexthop existing-svc 203.0.113.10   # or add/change it later ("" clears)
 exordos-vpn-cli account-reset alice --network-access-tags git
 ```
 
