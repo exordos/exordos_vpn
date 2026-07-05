@@ -35,6 +35,7 @@ from restalchemy.storage import exceptions as ra_exceptions
 from restalchemy.storage.sql import engines
 from rich.console import Console
 from rich.table import Table
+from rich.tree import Tree
 
 from exordos_vpn.common import config
 from exordos_vpn.common import constants as c
@@ -1330,9 +1331,103 @@ def department_create(ctx, name, parent, tags, description):
             CONSOLE.print(f"Tags: {', '.join(tag_list)}")
 
 
+def _department_children(departments):
+    """Group departments into (roots, {parent_uuid: [children]}), each
+    level sorted by name for stable output.
+
+    A department whose parent is missing from the set is treated as a
+    root. Members of a parent cycle (which the CLI/API refuse to create,
+    but may still appear via manual edits) end up reachable from no root;
+    callers handle them with a visited-set walk over the full list.
+    """
+    by_uuid = {d.uuid: d for d in departments}
+    roots, children = [], {}
+    for department in sorted(departments, key=lambda d: d.name):
+        if department.parent and department.parent in by_uuid:
+            children.setdefault(department.parent, []).append(department)
+        else:
+            roots.append(department)
+    return roots, children
+
+
+def _department_tree_label(department, effective):
+    """Rich-markup tree node: name, own tags, inherited-only tags ("+"),
+    description."""
+    own = department.network_access_tags or []
+    inherited = sorted(effective[department.uuid] - set(own))
+    label = f"[bold]{department.name}[/bold]"
+    if own:
+        label += f" [cyan]({', '.join(own)})[/cyan]"
+    if inherited:
+        label += f" [dim](+{', '.join(inherited)})[/dim]"
+    if department.description:
+        label += f" [dim]— {department.description}[/dim]"
+    return label
+
+
+def _add_department_branch(node, department, children, effective, visited):
+    visited.add(department.uuid)
+    branch = node.add(_department_tree_label(department, effective))
+    for child in children.get(department.uuid, []):
+        if child.uuid not in visited:
+            _add_department_branch(branch, child, children, effective, visited)
+
+
+def _department_node_dict(department, children, effective, visited):
+    visited.add(department.uuid)
+    return {
+        "uuid": str(department.uuid),
+        "name": department.name,
+        "tags": list(department.network_access_tags or []),
+        "effective_tags": sorted(effective[department.uuid]),
+        "description": department.description or "",
+        "children": [
+            _department_node_dict(child, children, effective, visited)
+            for child in children.get(department.uuid, [])
+            if child.uuid not in visited
+        ],
+    }
+
+
+def _print_department_tree(ctx, departments, effective):
+    """Render the department hierarchy: rich guide-line tree for table
+    format, nested objects with a `children` list for JSON. Cycle members
+    are rendered as extra roots — same degrade-don't-hang stance as
+    models.department_effective_tags."""
+    roots, children = _department_children(departments)
+    visited = set()
+
+    def each_root():
+        yield from roots
+        # anything still unvisited can only be a cycle member
+        for department in sorted(departments, key=lambda d: d.name):
+            if department.uuid not in visited:
+                yield department
+
+    if ctx.obj.get("format", FORMAT_TABLE) == FORMAT_JSON:
+        data = [
+            _department_node_dict(department, children, effective, visited)
+            for department in each_root()
+        ]
+        click.echo(json.dumps(data, indent=2))
+    else:
+        tree = Tree("departments", hide_root=True)
+        for department in each_root():
+            _add_department_branch(tree, department, children, effective, visited)
+        CONSOLE.print(tree)
+
+
 @cli.command("department-list")
+@click.option(
+    "--tree",
+    "as_tree",
+    is_flag=True,
+    default=False,
+    help="Render the department hierarchy as a tree "
+    "(with --format json: nested objects with a children list)",
+)
 @click.pass_context
-def department_list(ctx):
+def department_list(ctx, as_tree):
     """List departments with their own and effective (inherited) tags."""
     _ensure_config(ctx)
     session_ctx = ctx.obj["session_ctx"]
@@ -1340,6 +1435,9 @@ def department_list(ctx):
         departments = models.Department.objects.get_all(session=session)
         by_uuid = {d.uuid: d for d in departments}
         effective = models.department_effective_tags(departments)
+        if as_tree:
+            _print_department_tree(ctx, departments, effective)
+            return
         columns = ["uuid", "name", "parent", "tags", "effective_tags", "description"]
         rows = [
             (

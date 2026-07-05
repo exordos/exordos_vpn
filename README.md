@@ -86,7 +86,7 @@ Org-structure tree for granting access per department instead of per account. A 
 | Command | Description |
 |---|---|
 | `department-create <name> [--parent P] [--tags TAGS] [--description TEXT]` | Create department |
-| `department-list` | List departments with own and effective (inherited) tags |
+| `department-list [--tree]` | List departments with own and effective (inherited) tags; `--tree` draws the hierarchy (nested JSON with `--format json`) |
 | `department-set-parent <department> <parent>` | Move under another parent (`""` makes it a root; cycles are refused) |
 | `department-add-tag <department> <tags>` | Add network access tags |
 | `department-remove-tag <department> <tags>` | Remove network access tags |
