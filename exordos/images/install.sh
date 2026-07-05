@@ -39,7 +39,8 @@ apt install -y \
     postgresql \
     libev-dev \
     python3.14-venv \
-    python3-dev
+    python3-dev \
+    ipset
 
 # Default creds for exordos notification services
 sudo -u postgres psql -c "CREATE ROLE $GC_PG_USER WITH LOGIN PASSWORD '$GC_PG_PASS';"
