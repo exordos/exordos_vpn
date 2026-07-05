@@ -304,6 +304,63 @@ class TestDepartmentCli(CliTestCase):
         assert result.exit_code == 0, result.output
         assert self._get_department("child").parent is None
 
+    def _make_org_tree(self, monkeypatch):
+        self._invoke(monkeypatch, ["department-create", "org", "--tags", "web"])
+        self._invoke(
+            monkeypatch,
+            ["department-create", "backend", "--parent", "org", "--tags", "git"],
+        )
+        self._invoke(monkeypatch, ["department-create", "sales"])
+
+    def test_department_list_tree(self, monkeypatch):
+        self._make_org_tree(monkeypatch)
+
+        result = self._invoke(monkeypatch, ["department-list", "--tree"])
+
+        assert result.exit_code == 0, result.output
+        lines = result.output.splitlines()
+        assert "org (web)" in lines
+        assert "└── backend (git) (+web)" in lines
+        assert "sales" in lines
+
+    def test_department_list_tree_json(self, monkeypatch):
+        self._make_org_tree(monkeypatch)
+
+        result = self._invoke(
+            monkeypatch, ["--format", "json", "department-list", "--tree"]
+        )
+
+        assert result.exit_code == 0, result.output
+        roots = json.loads(result.output)
+        assert [r["name"] for r in roots] == ["org", "sales"]
+        org = roots[0]
+        assert [c["name"] for c in org["children"]] == ["backend"]
+        backend = org["children"][0]
+        assert backend["tags"] == ["git"]
+        assert backend["effective_tags"] == ["git", "web"]
+        assert backend["children"] == []
+
+    def test_department_list_tree_renders_cycle_members(self, monkeypatch):
+        # a parent cycle can't be created via CLI/API, only by manual DB
+        # edits; the tree must still show its members instead of hanging
+        # or dropping them
+        a = models.Department(name="a")
+        a.insert()
+        b = models.Department(name="b", parent=a.uuid)
+        b.insert()
+        with contexts.Context().session_manager() as s:
+            a = models.Department.objects.get_one(
+                session=s, filters={"name": dm_filters.EQ("a")}
+            )
+            a.parent = b.uuid
+            a.save(session=s)
+
+        result = self._invoke(monkeypatch, ["department-list", "--tree"])
+
+        assert result.exit_code == 0, result.output
+        assert "a" in result.output.split()
+        assert "└── b" in result.output
+
     def test_account_department_add_remove(self, monkeypatch):
         account = self._make_account()
         self._invoke(monkeypatch, ["department-create", "engineering"])
