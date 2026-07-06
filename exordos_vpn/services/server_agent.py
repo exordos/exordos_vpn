@@ -269,16 +269,16 @@ def _build_desired_routes(services, resolved_domains):
 
 
 def _account_matched_services(account, services, dept_granted=None):
-    """Services this account may reach.
+    """Services whose routes this account's CCD should push.
 
-    Mirrors the same matching _build_chain_rules uses for the firewall
-    ACCEPT rules, so a route is only ever pushed for a destination the
-    firewall would actually let through: "ALL" accounts get a blanket
-    ACCEPT there, so they match every service; RESTRICTED accounts match
-    by tag intersection (own tags plus department-granted ones).
+    Unlike the firewall ACCEPT rules (_build_chain_rules), where "ALL"
+    accounts get a blanket ACCEPT regardless of tags, route pushes are
+    always tag-gated: an "ALL" account can still reach an untagged
+    service through the firewall, but the client's OS won't route
+    matching traffic through the tunnel unless a route for it is pushed,
+    which — like a RESTRICTED account — requires the matching tag (own
+    tags plus department-granted ones).
     """
-    if account.network_access_type == "ALL":
-        return list(services)
     account_tags = _account_tags(account, dept_granted)
     return [s for s in services if account_tags & set(s.tags or [])]
 
@@ -300,9 +300,12 @@ def _build_ccd_push_lines(
     the option unset every matched destination is pushed — harmlessly
     redundant for internal services, so set it in any real deployment.
 
-    `network_access_type == "ALL"` accounts match *every* service: their
-    firewall grant is a blanket ACCEPT, but the client still only tunnels
-    what's pushed. Full-tunnel redirect-gateway is out of scope.
+    `network_access_type == "ALL"` accounts still only get routes for
+    services whose tag they hold (see _account_matched_services): the
+    firewall grant is a blanket ACCEPT, but the client only tunnels what's
+    pushed, and an ALL account with no tags gets no service routes at all
+    (only what private_networks/the server config push globally).
+    Full-tunnel redirect-gateway is out of scope.
 
     DNS is deliberately NOT pushed here: clients get their resolver from
     the OpenVPN server config's global `push "dhcp-option DNS ..."` (they
