@@ -635,15 +635,18 @@ class TestServerAgentCcdRoutePush(TestServerAgentFirewall):
         assert 'push "route 93.184.216.0 255.255.255.0"' in content
         assert 'push "route 172.16.5.0 255.255.255.0"' not in content
 
-    def test_ccd_pushes_all_service_routes_for_all_access_type(
+    def test_ccd_route_push_for_all_access_type_still_needs_tag(
         self, tmp_path, iptables_netns
     ):
-        """ALL accounts are firewall-ACCEPTed everywhere, but the client
-        still only tunnels pushed routes — so every service's external
-        routes are pushed, regardless of tags; private-net destinations
-        stay covered by the server-level push."""
+        """ALL accounts are firewall-ACCEPTed everywhere, but route pushes
+        are always tag-gated: an ALL account only gets a service's route
+        if it also holds that service's tag, same as a RESTRICTED account
+        would; private-net destinations stay covered by the server-level
+        push regardless."""
         network = self._make_network()
-        self._make_account(network, "alice", 2, network_access_type="ALL")
+        self._make_account(
+            network, "alice", 2, network_access_type="ALL", network_access_tags=["ext"]
+        )
         self._make_service(
             "ext-svc", ["93.184.216.0/24"], tags=["ext"], nexthop="127.0.0.2"
         )
@@ -658,7 +661,7 @@ class TestServerAgentCcdRoutePush(TestServerAgentFirewall):
 
         content = self._read_ccd(tmp_path, "", "alice")
         assert 'push "route 93.184.216.0 255.255.255.0"' in content
-        assert 'push "route 93.184.217.0 255.255.255.0"' in content
+        assert 'push "route 93.184.217.0 255.255.255.0"' not in content
         assert 'push "route 172.16.5.0 255.255.255.0"' not in content
 
     def test_ccd_no_route_push_for_unmatched_tags(self, tmp_path, iptables_netns):
