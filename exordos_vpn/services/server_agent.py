@@ -14,6 +14,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import dataclasses
 import datetime
 import logging
 import os
@@ -39,6 +40,8 @@ IPSET_BIN_PATH = "/usr/sbin/ipset"
 IP_BIN_PATH = "/usr/sbin/ip"
 IPSET_NAME_PREFIX = "exvpn_svc_"
 DEFAULT_DNS_TTL_FLOOR_SECONDS = 30
+DNS_FAILURE_BACKOFF_MAX_SECONDS = 3600
+DNS_FAILURE_BACKOFF_FACTOR = 2
 
 
 def _host_cidr(ip):
@@ -181,22 +184,39 @@ def _resolve_domain(domain, resolvers=None, timeout=5.0):
     through a specific upstream rather than whatever the VPN gateway host
     happens to be configured with.
 
-    Returns (ip_set, ttl_seconds), or None if resolution failed (caller
-    should keep using the last-known-good answer, if any).
+    Returns (ip_set, ttl_seconds).
+
+    Raises:
+        dns.exception.DNSException: resolution failed. Reporting it (and
+            deciding whether to keep the last-known-good answer) is
+            _query_domain's job, so both the reason and what happens next
+            end up in one log line.
     """
     if resolvers:
         resolver = dns.resolver.Resolver(configure=False)
         resolver.nameservers = resolvers
     else:
         resolver = dns.resolver.get_default_resolver()
-    try:
-        answer = resolver.resolve(domain, "A", lifetime=timeout)
-    except dns.exception.DNSException as e:
-        LOG.warning("DNS resolution failed for %r: %s", domain, e)
-        return None
+    answer = resolver.resolve(domain, "A", lifetime=timeout)
     ips = {str(rdata) for rdata in answer}
     ttl = answer.rrset.ttl if answer.rrset is not None else 0
     return ips, ttl
+
+
+@dataclasses.dataclass
+class _DnsEntry:
+    """Per-domain DNS state kept by _reconcile_dns.
+
+    A healthy answer and a failed lookup differ only in what they leave
+    behind, so both are one entry: the IPs to serve (empty until a domain
+    ever resolves, last-known-good afterwards) and when the domain may next
+    be queried — a TTL expiry and a failure backoff being the same question.
+    """
+
+    ips: set
+    next_attempt_at: datetime.datetime
+    # Seconds waited after the latest failure; 0 while the domain is healthy.
+    backoff: int = 0
 
 
 def _parse_dns_resolvers(raw):
@@ -348,7 +368,7 @@ class AgentService(basic.BasicService):
         )
         # lag to avoid race conditions
         self.lag = datetime.timedelta(seconds=30)
-        # domain -> (ip_set, expires_at); populated by _reconcile_dns
+        # domain -> _DnsEntry; populated by _reconcile_dns
         self._dns_cache = {}
         # last resolved{domain: ip_set} snapshot handed to process_instance,
         # so _iteration can detect "DNS changed" and force a full CCD rebuild
@@ -554,37 +574,69 @@ class AgentService(basic.BasicService):
         resolvers, if given, is a list of DNS server IPs to query instead
         of the system resolver (see dns_resolvers config option).
 
-        Returns dict[domain -> set of ip strings].
+        Returns dict[domain -> set of ip strings]; a domain that has never
+        resolved maps to an empty set, which every consumer already treats
+        the same as "no IPs" (they all read it with .get(domain, set())).
         """
-        domains = set()
-        for service in services:
-            domains.update(str(d) for d in service.domains)
+        domains = {str(domain) for service in services for domain in service.domains}
 
         now = datetime.datetime.now(datetime.timezone.utc)
-        resolved = {}
+        # Built from scratch each pass, so a domain dropped from every Service
+        # leaves no entry behind — and if it comes back it gets a fresh
+        # attempt rather than inheriting an old backoff.
+        cache = {}
         for domain in domains:
-            cached = self._dns_cache.get(domain)
-            if cached is not None and cached[1] > now:
-                resolved[domain] = cached[0]
-                continue
+            entry = self._dns_cache.get(domain)
+            if entry is None or entry.next_attempt_at <= now:
+                entry = self._query_domain(
+                    domain, entry, now, min_interval_seconds, resolvers
+                )
+            cache[domain] = entry
 
-            result = _resolve_domain(domain, resolvers=resolvers)
-            if result is None:
-                if cached is not None:
-                    resolved[domain] = cached[0]
-                continue
+        self._dns_cache = cache
+        return {domain: entry.ips for domain, entry in cache.items()}
 
-            ips, ttl = result
-            expires_at = now + datetime.timedelta(
-                seconds=max(ttl, min_interval_seconds)
+    def _query_domain(self, domain, entry, now, min_interval_seconds, resolvers):
+        """Re-resolve `domain` and fold the outcome into a fresh _DnsEntry.
+
+        A failure keeps the last-known-good IPs — backoff must never withdraw
+        access — and pushes the next attempt out, doubling on each consecutive
+        failure up to DNS_FAILURE_BACKOFF_MAX_SECONDS. Without that backoff a
+        domain that never resolves (a typo, or one added before its records
+        exist) is re-queried every tick, and since _iteration() resolves
+        before it reconciles the firewall, a resolver that times out on such a
+        domain delays access revocations by the resolver timeout every tick.
+        """
+        previous = entry or _DnsEntry(ips=set(), next_attempt_at=now)
+        try:
+            ips, ttl = _resolve_domain(domain, resolvers=resolvers)
+        except dns.exception.DNSException as e:
+            # The floor doubles as the first backoff, so a one-off blip costs
+            # no more staleness than the normal re-resolve interval.
+            floor = max(min_interval_seconds, DEFAULT_DNS_TTL_FLOOR_SECONDS)
+            backoff = min(
+                max(previous.backoff * DNS_FAILURE_BACKOFF_FACTOR, floor),
+                DNS_FAILURE_BACKOFF_MAX_SECONDS,
             )
-            self._dns_cache[domain] = (ips, expires_at)
-            resolved[domain] = ips
+            LOG.warning(
+                "DNS resolution failed for %r: %s; serving %d known IP(s), "
+                "next attempt in %ss",
+                domain,
+                e,
+                len(previous.ips),
+                backoff,
+            )
+            return _DnsEntry(
+                ips=previous.ips,
+                next_attempt_at=now + datetime.timedelta(seconds=backoff),
+                backoff=backoff,
+            )
 
-        for stale_domain in set(self._dns_cache) - domains:
-            del self._dns_cache[stale_domain]
-
-        return resolved
+        return _DnsEntry(
+            ips=ips,
+            next_attempt_at=now
+            + datetime.timedelta(seconds=max(ttl, min_interval_seconds)),
+        )
 
     def _run_ipset(self, *args):
         """Run an ipset command, raising on any failure."""
