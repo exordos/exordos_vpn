@@ -1041,8 +1041,9 @@ class AgentService(basic.BasicService):
         private_networks = _parse_private_networks(
             getattr(conf, "private_networks", "")
         )
+        LOG.info("(%s)Processing %i accounts...", name, len(accounts))
         for account in accounts:
-            LOG.info("(%s)Processing account: %s", name, account.account_name)
+            LOG.debug("(%s)Processing account: %s", name, account.account_name)
             ccd_file_path = os.path.join(ccd_dir, account.account_name)
             with open(ccd_file_path, "w") as f:
                 if account.status == "DISABLED":
