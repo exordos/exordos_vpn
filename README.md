@@ -81,7 +81,7 @@ Each account owns an `address_offset` within its network, which resolves to a co
 | Command | Description |
 |---|---|
 | `address-list [--network NAME\|UUID] [--active] [--history]` | One row per IP ever allocated: current owner (open span), total owner count, first/last activity. `--active` shows only IPs with a current owner; `--history` expands each IP into its full ownership history (every span, grouped by IP) |
-| `address-history [--ip IP] [--network NAME\|UUID] [--user-id UID] [--account NAME\|UUID] [--active]` | Full ownership timeline (oldest first): who held which IP, from/until when, and why it was released. `--active` shows only currently-held spans |
+| `address-history [--ip IP] [--network NAME\|UUID] [--user-id UID] [--account NAME\|UUID] [--active] [--sort offset\|time]` | Full ownership timeline: who held which IP, from/until when, and why it was released. Grouped by network + offset by default (chronological within each offset); `--sort time` for a purely chronological view. `--active` shows only currently-held spans |
 
 ```bash
 # Who has ever held 10.8.0.2, in order, with dates
