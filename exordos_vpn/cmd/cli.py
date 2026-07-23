@@ -1380,11 +1380,22 @@ def address_list(ctx, network_name, active, history):
     default=False,
     help="Only currently-open allocations (not yet released)",
 )
+@click.option(
+    "--sort",
+    "sort_by",
+    type=click.Choice(["offset", "time"]),
+    default="offset",
+    show_default=True,
+    help="Order rows grouped by network + offset (chronological within "
+    "each offset), or purely by allocation time",
+)
 @click.pass_context
-def address_history(ctx, ip, network_name, user_id, account, active):
-    """Show the ownership timeline of allocated IPs, oldest first.
+def address_history(ctx, ip, network_name, user_id, account, active, sort_by):
+    """Show the ownership timeline of allocated IPs.
 
     Each row is one ownership span (who held which IP, from when to when).
+    Rows are grouped by network + offset by default (chronological within
+    each offset); pass --sort time for a purely chronological view.
     Filter by --ip/--network/--user-id/--account and export with
     --format json.
     """
@@ -1406,7 +1417,12 @@ def address_history(ctx, ip, network_name, user_id, account, active):
         allocations = models.AddressAllocation.objects.get_all(
             session=session, filters=filters
         )
-        allocations.sort(key=lambda a: a.allocated_at)
+        if sort_by == "offset":
+            allocations.sort(
+                key=lambda a: (a.network_name, a.address_offset, a.allocated_at)
+            )
+        else:
+            allocations.sort(key=lambda a: a.allocated_at)
 
         columns = [
             "ip",

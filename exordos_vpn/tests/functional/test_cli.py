@@ -584,6 +584,34 @@ class TestAddressAllocationCli(CliTestCase):
         assert rows[0]["status"] == "active"
         assert rows[0]["released_at"] == "-"
 
+    def test_address_history_sort_defaults_to_offset(self, monkeypatch):
+        network = self._make_network()
+        # The higher offset (3) was allocated first in time, so time and
+        # offset orderings disagree.
+        third = self._make_account(network, "dave", 3)
+        with contexts.Context().session_manager() as s:
+            s.execute(
+                "UPDATE address_allocations SET allocated_at = %s "
+                "WHERE account_uuid = %s",
+                (
+                    datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc),
+                    str(third.uuid),
+                ),
+            )
+        self._make_account(network, "alice", 2)
+
+        # Default: grouped by network + offset -> offset 2 before offset 3.
+        default = self._invoke(monkeypatch, ["--format", "json", "address-history"])
+        assert default.exit_code == 0, default.output
+        assert [r["offset"] for r in json.loads(default.output)] == [2, 3]
+
+        # --sort time falls back to chronological -> offset 3 (older) first.
+        by_time = self._invoke(
+            monkeypatch, ["--format", "json", "address-history", "--sort", "time"]
+        )
+        assert by_time.exit_code == 0, by_time.output
+        assert [r["offset"] for r in json.loads(by_time.output)] == [3, 2]
+
     def test_address_list_shows_current_owner_and_count(self, monkeypatch):
         network = self._make_network()
         first = self._make_account(network, "alice", 2)
