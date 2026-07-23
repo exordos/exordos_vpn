@@ -20,6 +20,8 @@ import logging
 from gcl_looper.services import basic
 from restalchemy.common import contexts
 
+from exordos_vpn.dm import models
+
 LOG = logging.getLogger(__name__)
 
 
@@ -34,10 +36,20 @@ class SchedulerService(basic.BasicService):
         delta = datetime.datetime.now() - start_delta
 
         with self._ctx.session_manager() as s:
-            rowcount = s.execute(
+            # Free offsets held by long-disabled accounts and, in the same
+            # transaction, close each account's open allocation span so the
+            # ownership history reflects the release (RETURNING gives us the
+            # affected accounts the bulk UPDATE touched).
+            rows = s.execute(
                 """\
-update accounts set address_offset=NULL where status='DISABLED' and address_offset is not null and updated_at < %s""",
+update accounts set address_offset=NULL where status='DISABLED' and address_offset is not null and updated_at < %s returning uuid""",
                 (delta,),
-            ).rowcount
-        if rowcount > 0:
-            LOG.info("Cleaned up %i unused address_offsets", rowcount)
+            ).fetchall()
+            for row in rows:
+                models.AddressAllocation.close_open_for_account(
+                    row["uuid"],
+                    reason="scheduler_cleanup",
+                    session=s,
+                )
+        if rows:
+            LOG.info("Cleaned up %i unused address_offsets", len(rows))

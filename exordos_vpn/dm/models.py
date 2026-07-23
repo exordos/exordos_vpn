@@ -260,6 +260,130 @@ limit 1;""",
         self.status = "DISABLED"
         self.save(session=session)
 
+    def _open_address_allocation(self, session=None):
+        """Record that this account now owns its address_offset.
+
+        Opens an AddressAllocation history span (released_at unset). The
+        client IP is snapshotted from the network at this moment so the
+        trail stays truthful even if the network's subnets are later
+        reshuffled. Does nothing when the account has no offset.
+        """
+        if not self.address_offset:
+            return
+        ip, netmask = self.network.ip_for_offset(self.address_offset)
+        # Defensive: the scheduler closes a span before its offset can be
+        # reused, but a manual DB edit could leave one open on the same
+        # (network, offset) — close it as reallocated so this offset never
+        # shows two concurrent owners.
+        AddressAllocation.close_open_for_offset(
+            self.network,
+            self.address_offset,
+            reason="reallocated",
+            session=session,
+            exclude_account_uuid=self.uuid,
+        )
+        AddressAllocation(
+            network_uuid=self.network.uuid,
+            network_name=self.network.name,
+            address_offset=self.address_offset,
+            ip=str(ip),
+            netmask=str(netmask),
+            account_uuid=self.uuid,
+            account_name=self.account_name,
+            user_id=self.user_id,
+            allocated_at=datetime.datetime.now(datetime.timezone.utc),
+        ).insert(session=session)
+
+    def insert(self, session=None):
+        """Persist the account, then open its address-allocation span so
+        every account that ever held an offset is recorded, regardless of
+        which caller (CLI, user API) created it."""
+        super().insert(session=session)
+        self._open_address_allocation(session=session)
+
+
+class AddressAllocation(CommonModel):
+    """Append-only history of address-offset (→ client IP) ownership.
+
+    An account owns an address_offset within a Network, which resolves to
+    a concrete client IP. Offsets are freed by SchedulerService once an
+    account has been DISABLED long enough, then handed to a different
+    account — so the same IP belongs to different accounts over time. Each
+    row is one ownership span: opened when an offset is allocated to an
+    account, closed (released_at set) when that offset is freed. Network
+    and account identity are snapshotted (plain columns, no FK) so the
+    trail outlives deletion of the account or network it refers to.
+    """
+
+    __tablename__ = "address_allocations"
+
+    network_uuid = properties.property(types.UUID(), required=True)
+    network_name = properties.property(types.String(), required=True)
+    address_offset = properties.property(types.Integer(), required=True)
+    ip = properties.property(types.String(), required=True)
+    netmask = properties.property(types.AllowNone(types.String()), default=None)
+    account_uuid = properties.property(types.UUID(), required=True)
+    account_name = properties.property(types.String(), required=True)
+    user_id = properties.property(types.String(), required=True)
+    allocated_at = properties.property(types.UTCDateTimeZ(), required=True)
+    released_at = properties.property(
+        types.AllowNone(types.UTCDateTimeZ()), default=None
+    )
+    release_reason = properties.property(
+        types.AllowNone(
+            types.Enum(
+                (
+                    "scheduler_cleanup",
+                    "reallocated",
+                    "account_deleted",
+                    "manual",
+                )
+            )
+        ),
+        default=None,
+    )
+
+    @staticmethod
+    def _close(allocations, reason, released_at, session=None):
+        for alloc in allocations:
+            if alloc.released_at is not None:
+                continue
+            alloc.released_at = released_at
+            alloc.release_reason = reason
+            alloc.save(session=session)
+
+    @classmethod
+    def close_open_for_account(
+        cls, account_uuid, reason, session=None, released_at=None
+    ):
+        """Close every open span owned by the given account."""
+        released_at = released_at or datetime.datetime.now(datetime.timezone.utc)
+        allocations = cls.objects.get_all(
+            session=session,
+            filters={"account_uuid": dm_filters.EQ(str(account_uuid))},
+        )
+        cls._close(allocations, reason, released_at, session=session)
+
+    @classmethod
+    def close_open_for_offset(
+        cls, network, address_offset, reason, session=None, exclude_account_uuid=None
+    ):
+        """Close open spans on a (network, offset) pair, skipping the
+        account passed as exclude_account_uuid (the new owner)."""
+        released_at = datetime.datetime.now(datetime.timezone.utc)
+        allocations = cls.objects.get_all(
+            session=session,
+            filters={
+                "network_uuid": dm_filters.EQ(str(network.uuid)),
+                "address_offset": dm_filters.EQ(address_offset),
+            },
+        )
+        if exclude_account_uuid is not None:
+            allocations = [
+                a for a in allocations if a.account_uuid != exclude_account_uuid
+            ]
+        cls._close(allocations, reason, released_at, session=session)
+
 
 class AccountAuthCache(models.ModelWithUUID, orm.SQLStorableMixin):
     """Auth cache for reconnects — separate table so updates don't touch accounts.updated_at."""

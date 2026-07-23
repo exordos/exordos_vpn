@@ -1222,6 +1222,225 @@ def account_reset_pin(ctx, account, pin_length, disable_pbin):
         _pbin_send(disable_pbin, text=pbin_text)
 
 
+# --- Address allocation history commands ---
+
+
+def _sort_key_ip(value):
+    """Numeric sort key for an IP string, tolerant of odd values."""
+    try:
+        return (0, int(netaddr.IPAddress(value)))
+    except (netaddr.AddrFormatError, ValueError):
+        return (1, value)
+
+
+def _allocation_status(alloc):
+    return "active" if alloc.released_at is None else "released"
+
+
+@cli.command("address-list")
+@click.option(
+    "--network", "network_name", default=None, help="Filter by network (name or UUID)"
+)
+@click.option(
+    "--active",
+    is_flag=True,
+    default=False,
+    help="Only IPs with a current owner (an open allocation); with "
+    "--history, only currently-open spans",
+)
+@click.option(
+    "--history",
+    is_flag=True,
+    default=False,
+    help="Expand each IP into its full ownership history (every span, "
+    "oldest first per IP) instead of one aggregated row",
+)
+@click.pass_context
+def address_list(ctx, network_name, active, history):
+    """List every IP that has ever been allocated, with its current owner.
+
+    One row per distinct (network, IP): the current owner is the account
+    holding the still-open allocation span, if any. Pass --history to
+    instead dump every ownership span grouped by IP (the full ownership
+    history), or use address-history for a purely chronological view.
+    Honors --format json.
+    """
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        filters = {}
+        if network_name:
+            network = _resolve_network(session, network_name)
+            filters["network_uuid"] = dm_filters.EQ(str(network.uuid))
+        allocations = models.AddressAllocation.objects.get_all(
+            session=session, filters=filters
+        )
+
+        if history:
+            # One row per span, grouped by IP then chronological, so the
+            # whole ownership history exports in IP order.
+            allocations.sort(key=lambda a: (_sort_key_ip(a.ip), a.allocated_at))
+            columns = [
+                "ip",
+                "offset",
+                "network",
+                "account_name",
+                "user_id",
+                "allocated_at",
+                "released_at",
+                "reason",
+                "status",
+            ]
+            rows = []
+            for a in allocations:
+                if active and a.released_at is not None:
+                    continue
+                rows.append(
+                    (
+                        a.ip,
+                        a.address_offset,
+                        a.network_name,
+                        a.account_name,
+                        a.user_id,
+                        a.allocated_at.isoformat(),
+                        a.released_at.isoformat() if a.released_at else "-",
+                        a.release_reason or "-",
+                        _allocation_status(a),
+                    )
+                )
+            _print_output(ctx, columns, rows)
+            return
+
+        # Aggregate spans per (network, ip).
+        by_ip = {}
+        for a in allocations:
+            key = (str(a.network_uuid), a.ip)
+            agg = by_ip.setdefault(
+                key,
+                {
+                    "network": a.network_name,
+                    "ip": a.ip,
+                    "offset": a.address_offset,
+                    "owners": 0,
+                    "current_owner": "-",
+                    "first_allocated": a.allocated_at,
+                    "last_activity": a.allocated_at,
+                },
+            )
+            agg["owners"] += 1
+            agg["first_allocated"] = min(agg["first_allocated"], a.allocated_at)
+            agg["last_activity"] = max(
+                agg["last_activity"], a.released_at or a.allocated_at
+            )
+            if a.released_at is None:
+                agg["current_owner"] = a.account_name
+
+        rows = []
+        for agg in sorted(by_ip.values(), key=lambda r: _sort_key_ip(r["ip"])):
+            if active and agg["current_owner"] == "-":
+                continue
+            rows.append(
+                (
+                    agg["ip"],
+                    agg["offset"],
+                    agg["network"],
+                    agg["current_owner"],
+                    agg["owners"],
+                    agg["first_allocated"].isoformat(),
+                    agg["last_activity"].isoformat(),
+                )
+            )
+
+        columns = [
+            "ip",
+            "offset",
+            "network",
+            "current_owner",
+            "owners",
+            "first_allocated",
+            "last_activity",
+        ]
+        _print_output(ctx, columns, rows)
+
+
+@cli.command("address-history")
+@click.option("--ip", default=None, help="Filter by client IP")
+@click.option(
+    "--network", "network_name", default=None, help="Filter by network (name or UUID)"
+)
+@click.option("--user-id", default=None, help="Filter by user ID")
+@click.option(
+    "--account",
+    default=None,
+    help="Filter by account (name or UUID) — matches its allocation history",
+)
+@click.option(
+    "--active",
+    is_flag=True,
+    default=False,
+    help="Only currently-open allocations (not yet released)",
+)
+@click.pass_context
+def address_history(ctx, ip, network_name, user_id, account, active):
+    """Show the ownership timeline of allocated IPs, oldest first.
+
+    Each row is one ownership span (who held which IP, from when to when).
+    Filter by --ip/--network/--user-id/--account and export with
+    --format json.
+    """
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        filters = {}
+        if ip:
+            filters["ip"] = dm_filters.EQ(ip)
+        if user_id:
+            filters["user_id"] = dm_filters.EQ(user_id)
+        if network_name:
+            network = _resolve_network(session, network_name)
+            filters["network_uuid"] = dm_filters.EQ(str(network.uuid))
+        if account:
+            acc = _resolve_account(session, account)
+            filters["account_uuid"] = dm_filters.EQ(str(acc.uuid))
+
+        allocations = models.AddressAllocation.objects.get_all(
+            session=session, filters=filters
+        )
+        allocations.sort(key=lambda a: a.allocated_at)
+
+        columns = [
+            "ip",
+            "offset",
+            "network",
+            "user_id",
+            "account_name",
+            "account_uuid",
+            "allocated_at",
+            "released_at",
+            "reason",
+            "status",
+        ]
+        rows = []
+        for a in allocations:
+            if active and a.released_at is not None:
+                continue
+            rows.append(
+                (
+                    a.ip,
+                    a.address_offset,
+                    a.network_name,
+                    a.user_id,
+                    a.account_name,
+                    str(a.account_uuid),
+                    a.allocated_at.isoformat(),
+                    a.released_at.isoformat() if a.released_at else "-",
+                    a.release_reason or "-",
+                    _allocation_status(a),
+                )
+            )
+        _print_output(ctx, columns, rows)
+
+
 # --- Network commands ---
 
 

@@ -74,6 +74,22 @@ Global options:
 | `network-remove-subnet <network> <subnets>` | Remove subnets from a network |
 | `network-delete <network>` | Delete a network (only if no accounts assigned) |
 
+### Address history
+
+Each account owns an `address_offset` within its network, which resolves to a concrete client IP. When an account stays disabled long enough the [scheduler](#scheduler-exordos-vpn-scheduler) frees its offset and a later account may reuse it — so the same IP belongs to different accounts over time. Every ownership span is recorded in an append-only history (account/network identity is snapshotted, so the trail survives account or network deletion). Both commands honor `--format json` for export.
+
+| Command | Description |
+|---|---|
+| `address-list [--network NAME\|UUID] [--active] [--history]` | One row per IP ever allocated: current owner (open span), total owner count, first/last activity. `--active` shows only IPs with a current owner; `--history` expands each IP into its full ownership history (every span, grouped by IP) |
+| `address-history [--ip IP] [--network NAME\|UUID] [--user-id UID] [--account NAME\|UUID] [--active]` | Full ownership timeline (oldest first): who held which IP, from/until when, and why it was released. `--active` shows only currently-held spans |
+
+```bash
+# Who has ever held 10.8.0.2, in order, with dates
+exordos-vpn-cli address-history --ip 10.8.0.2
+# Export the whole allocation history as JSON
+exordos-vpn-cli --format json address-history > allocations.json
+```
+
 ### Network Access
 
 | Command | Description |
