@@ -14,7 +14,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import datetime
 import json
+import uuid
 
 from click.testing import CliRunner
 import netaddr
@@ -487,3 +489,203 @@ class TestDepartmentCli(CliTestCase):
                 )
                 is None
             )
+
+
+class TestAddressAllocationCli(CliTestCase):
+    """Functional tests for address-allocation history: the model hooks
+    that open/close ownership spans and the `address-*` CLI commands."""
+
+    def _make_network(self, cidr="10.8.0.0/24"):
+        network = models.Network(name="testnet", subnets=[netaddr.IPNetwork(cidr)])
+        network.insert()
+        return network
+
+    def _make_account(self, network, name, offset):
+        account = models.Account(
+            account_name=name,
+            user_id=f"user-{name}",
+            pin="123456",
+            network=network,
+            address_offset=offset,
+        )
+        account.insert()
+        return account
+
+    def _allocations(self, **filters):
+        f = {k: dm_filters.EQ(v) for k, v in filters.items()}
+        with contexts.Context().session_manager() as s:
+            allocs = models.AddressAllocation.objects.get_all(session=s, filters=f)
+        return sorted(allocs, key=lambda a: a.allocated_at)
+
+    def test_account_insert_opens_span(self):
+        network = self._make_network()
+        account = self._make_account(network, "alice", 2)
+
+        allocs = self._allocations(account_uuid=str(account.uuid))
+        assert len(allocs) == 1
+        span = allocs[0]
+        assert span.ip == "10.8.0.2"
+        assert span.account_name == "alice"
+        assert span.user_id == "user-alice"
+        assert span.network_name == "testnet"
+        assert span.address_offset == 2
+        assert span.released_at is None
+        assert span.release_reason is None
+
+    def test_scheduler_closes_span_and_reuse_records_new_owner(self):
+        from exordos_vpn.services import scheduler
+
+        network = self._make_network()
+        first = self._make_account(network, "alice", 2)
+
+        # Disable and backdate so the scheduler treats the offset as stale.
+        with contexts.Context().session_manager() as s:
+            s.execute(
+                "UPDATE accounts SET status='DISABLED', "
+                "updated_at=NOW() - INTERVAL '10 days' WHERE uuid=%s",
+                (str(first.uuid),),
+            )
+
+        scheduler.SchedulerService(offset_days=1)._iteration()
+
+        # The offset is freed and its span closed as a scheduler cleanup.
+        with contexts.Context().session_manager() as s:
+            refreshed = models.Account.objects.get_one(
+                session=s, filters={"uuid": dm_filters.EQ(str(first.uuid))}
+            )
+        assert refreshed.address_offset is None
+
+        first_span = self._allocations(account_uuid=str(first.uuid))[0]
+        assert first_span.released_at is not None
+        assert first_span.release_reason == "scheduler_cleanup"
+
+        # A new account reuses offset 2 (same IP) -> fresh open span.
+        second = self._make_account(network, "bob", 2)
+        ip_spans = self._allocations(ip="10.8.0.2")
+        assert len(ip_spans) == 2
+        assert ip_spans[0].account_name == "alice"
+        assert ip_spans[1].account_name == "bob"
+        assert ip_spans[1].released_at is None
+        assert {s.account_uuid for s in ip_spans} == {first.uuid, second.uuid}
+
+    def test_address_history_json_export(self, monkeypatch):
+        network = self._make_network()
+        self._make_account(network, "alice", 2)
+
+        result = self._invoke(
+            monkeypatch,
+            ["--format", "json", "address-history", "--ip", "10.8.0.2"],
+        )
+        assert result.exit_code == 0, result.output
+        rows = json.loads(result.output)
+        assert len(rows) == 1
+        assert rows[0]["ip"] == "10.8.0.2"
+        assert rows[0]["account_name"] == "alice"
+        assert rows[0]["status"] == "active"
+        assert rows[0]["released_at"] == "-"
+
+    def test_address_list_shows_current_owner_and_count(self, monkeypatch):
+        network = self._make_network()
+        first = self._make_account(network, "alice", 2)
+        # Release alice's span, then hand offset 2 to bob.
+        models.AddressAllocation.close_open_for_account(
+            str(first.uuid), reason="manual"
+        )
+        with contexts.Context().session_manager() as s:
+            s.execute(
+                "UPDATE accounts SET address_offset=NULL WHERE uuid=%s",
+                (str(first.uuid),),
+            )
+        self._make_account(network, "bob", 2)
+
+        result = self._invoke(monkeypatch, ["--format", "json", "address-list"])
+        assert result.exit_code == 0, result.output
+        rows = json.loads(result.output)
+        row = next(r for r in rows if r["ip"] == "10.8.0.2")
+        assert row["current_owner"] == "bob"
+        assert row["owners"] == 2
+
+    def test_address_list_history_flag_dumps_all_owners(self, monkeypatch):
+        network = self._make_network()
+        first = self._make_account(network, "alice", 2)
+        models.AddressAllocation.close_open_for_account(
+            str(first.uuid), reason="manual"
+        )
+        with contexts.Context().session_manager() as s:
+            s.execute(
+                "UPDATE accounts SET address_offset=NULL WHERE uuid=%s",
+                (str(first.uuid),),
+            )
+        self._make_account(network, "bob", 2)
+
+        result = self._invoke(
+            monkeypatch, ["--format", "json", "address-list", "--history"]
+        )
+        assert result.exit_code == 0, result.output
+        rows = json.loads(result.output)
+        # Both ownership spans of 10.8.0.2 are expanded, oldest first.
+        spans = [r for r in rows if r["ip"] == "10.8.0.2"]
+        assert [r["account_name"] for r in spans] == ["alice", "bob"]
+        assert spans[0]["status"] == "released"
+        assert spans[0]["reason"] == "manual"
+        assert spans[1]["status"] == "active"
+        assert spans[1]["released_at"] == "-"
+
+    def test_address_list_active_filter(self, monkeypatch):
+        network = self._make_network()
+        first = self._make_account(network, "alice", 2)
+        models.AddressAllocation.close_open_for_account(
+            str(first.uuid), reason="manual"
+        )
+        with contexts.Context().session_manager() as s:
+            s.execute(
+                "UPDATE accounts SET address_offset=NULL WHERE uuid=%s",
+                (str(first.uuid),),
+            )
+
+        result = self._invoke(
+            monkeypatch, ["--format", "json", "address-list", "--active"]
+        )
+        assert result.exit_code == 0, result.output
+        rows = json.loads(result.output)
+        # The only IP's span is released -> nothing active to show.
+        assert rows == []
+
+    def test_migration_backfills_existing_offset_holders(self):
+        # Roll this migration back to the pre-0006 schema, plant an account
+        # that already holds an offset, then re-apply 0006 and check the
+        # back-fill opened a span dated to the account's creation time.
+        migration = "0006-add-address-allocations-1e7b4d.py"
+        engine = self.get_migration_engine()
+        engine.rollback_migration(migration)
+
+        net_uuid = str(uuid.uuid4())
+        acc_uuid = str(uuid.uuid4())
+        created = datetime.datetime(2026, 1, 2, 3, 4, 5)
+        with contexts.Context().session_manager() as s:
+            s.execute(
+                "INSERT INTO networks "
+                "(uuid, name, description, subnets, created_at, updated_at) "
+                "VALUES (%s, %s, %s, %s, NOW(), NOW())",
+                (net_uuid, "backfillnet", "", ["10.9.0.0/24"]),
+            )
+            s.execute(
+                "INSERT INTO accounts "
+                "(uuid, user_id, account_name, pin_hash, network, "
+                "address_offset, created_at, updated_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())",
+                (acc_uuid, "user-carol", "carol", "x", net_uuid, 3, created),
+            )
+
+        engine.apply_migration(migration)
+
+        spans = self._allocations(account_uuid=acc_uuid)
+        assert len(spans) == 1
+        span = spans[0]
+        assert span.ip == "10.9.0.3"
+        assert span.netmask == "255.255.255.0"
+        assert span.account_name == "carol"
+        assert span.user_id == "user-carol"
+        assert span.network_name == "backfillnet"
+        assert span.released_at is None
+        assert span.allocated_at.replace(tzinfo=None) == created
