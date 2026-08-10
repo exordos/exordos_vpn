@@ -276,6 +276,111 @@ class TestAccountOtpRequiredCli(CliTestCase):
         assert self._cached_logins(account) == 1
 
 
+class TestAccountDisableEnableCli(CliTestCase):
+    """Functional tests for `account-disable` / `account-enable`."""
+
+    def _make_account(self, name="alice"):
+        network = models.Network(
+            name="testnet", subnets=[netaddr.IPNetwork("10.8.0.0/24")]
+        )
+        network.insert()
+        account = models.Account(
+            account_name=name,
+            user_id=f"user-{name}",
+            pin="123456",
+            network=network,
+            address_offset=2,
+        )
+        account.insert()
+        return account
+
+    def _get_account(self, name):
+        with contexts.Context().session_manager() as s:
+            return models.Account.objects.get_one(
+                session=s, filters={"account_name": dm_filters.EQ(name)}
+            )
+
+    def _spans(self, account):
+        with contexts.Context().session_manager() as s:
+            allocs = models.AddressAllocation.objects.get_all(
+                session=s,
+                filters={"account_uuid": dm_filters.EQ(str(account.uuid))},
+            )
+        return sorted(allocs, key=lambda a: a.allocated_at)
+
+    def _expire_offset(self, account):
+        """Disable the account far enough in the past for the scheduler to
+        free its offset, then run one scheduler iteration."""
+        from exordos_vpn.services import scheduler
+
+        with contexts.Context().session_manager() as s:
+            s.execute(
+                "UPDATE accounts SET status='DISABLED', "
+                "updated_at=NOW() - INTERVAL '10 days' WHERE uuid=%s",
+                (str(account.uuid),),
+            )
+        scheduler.SchedulerService(offset_days=1)._iteration()
+
+    def test_disable_clears_auth_cache(self, monkeypatch):
+        """A cached login must not survive the disable: it would hand back
+        a working password for the rest of the TTL after a re-enable."""
+        account = self._make_account()
+        account.update_auth_cache("123456000000")
+        with contexts.Context().session_manager() as s:
+            assert (
+                models.AccountAuthCache.objects.count(
+                    session=s, filters={"account": dm_filters.EQ(account)}
+                )
+                == 1
+            )
+
+        result = self._invoke(monkeypatch, ["account-disable", "alice"])
+        assert result.exit_code == 0, result.output
+        with contexts.Context().session_manager() as s:
+            assert (
+                models.AccountAuthCache.objects.count(
+                    session=s, filters={"account": dm_filters.EQ(account)}
+                )
+                == 0
+            )
+
+    def test_enable_before_cleanup_keeps_ip_and_span(self, monkeypatch):
+        account = self._make_account()
+        self._invoke(monkeypatch, ["account-disable", "alice"])
+
+        result = self._invoke(monkeypatch, ["account-enable", "alice"])
+        assert result.exit_code == 0, result.output
+        assert "10.8.0.2" in result.output
+        assert "unchanged" in result.output
+
+        refreshed = self._get_account("alice")
+        assert refreshed.status == "ACTIVE"
+        assert refreshed.address_offset == 2
+
+        # The ownership span was never closed, so no new one is opened.
+        spans = self._spans(account)
+        assert len(spans) == 1
+        assert spans[0].released_at is None
+
+    def test_enable_after_cleanup_is_refused(self, monkeypatch):
+        """Once the offset is gone the IP may already be someone else's,
+        so the account stays disabled."""
+        account = self._make_account()
+        self._expire_offset(account)
+
+        result = self._invoke(monkeypatch, ["account-enable", "alice"])
+        assert result.exit_code == 1
+        assert "no address offset" in result.output
+        assert self._get_account("alice").status == "DISABLED"
+
+    def test_enable_active_account_is_noop(self, monkeypatch):
+        self._make_account()
+
+        result = self._invoke(monkeypatch, ["account-enable", "alice"])
+        assert result.exit_code == 0, result.output
+        assert "already active" in result.output
+
+
 class TestDepartmentCli(CliTestCase):
     """Functional tests for the `department-*` / `account-department-*`
     CLI commands."""

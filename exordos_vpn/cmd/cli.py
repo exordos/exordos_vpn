@@ -742,6 +742,53 @@ def account_disable(ctx, account):
         CONSOLE.print(f"Account {acc.uuid} ({acc.account_name}) disabled")
 
 
+@cli.command("account-enable")
+@click.argument("account")
+@click.pass_context
+def account_enable(ctx, account):
+    """Re-enable a disabled account, keeping its client IP.
+
+    Only possible while the account still holds its address offset: once
+    the scheduler has freed it (see clean-unused-offsets-days) the IP may
+    already belong to someone else and the account cannot be revived.
+    """
+    _ensure_config(ctx)
+    session_ctx = ctx.obj["session_ctx"]
+    with session_ctx.session_manager() as session:
+        acc = _resolve_account(session, account)
+        # Re-read under a row lock: the scheduler may be freeing this very
+        # offset right now, and save() writes the whole row back — an
+        # unlocked read would resurrect an offset that has meanwhile been
+        # handed to another account.
+        acc = models.Account.objects.get_one(
+            session=session,
+            filters={"uuid": dm_filters.EQ(str(acc.uuid))},
+            locked=True,
+        )
+
+        if acc.status == "ACTIVE":
+            CONSOLE.print(f"Account {acc.uuid} ({acc.account_name}) is already active")
+            return
+
+        if not acc.address_offset:
+            CONSOLE.print(
+                f"[red]Account {acc.account_name} ({acc.uuid}) has no address "
+                f"offset[/red] — it was freed after the account had stayed "
+                f"disabled for too long, and its IP may already belong to "
+                f"another account. Create a new account instead."
+            )
+            raise SystemExit(1)
+
+        acc.enable(session=session)
+
+        try:
+            client_ip, _ = acc.network.ip_for_offset(acc.address_offset)
+        except ValueError:
+            client_ip = "(unresolvable)"
+        CONSOLE.print(f"Account {acc.uuid} ({acc.account_name}) enabled")
+        CONSOLE.print(f"Client IP: {client_ip} (unchanged)")
+
+
 @cli.command("account-otp-required")
 @click.argument("account")
 @click.argument("required", type=click.Choice(["on", "off"]))
