@@ -259,6 +259,18 @@ limit 1;""",
     def disable(self, session=None):
         self.status = "DISABLED"
         self.save(session=session)
+        # Drop the cached login: it outlives the account otherwise, and a
+        # later re-enable would hand back a working password (PIN + an
+        # already-used OTP code) for the rest of the TTL.
+        cache = AccountAuthCache.objects.get_one_or_none(
+            session=session, filters={"account": dm_filters.EQ(self)}
+        )
+        if cache:
+            cache.delete(session=session)
+
+    def enable(self, session=None):
+        self.status = "ACTIVE"
+        self.save(session=session)
 
     def _open_address_allocation(self, session=None):
         """Record that this account now owns its address_offset.
